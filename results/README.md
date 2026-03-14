@@ -23,4 +23,4 @@ disaster_project/
 ## Access
 - Drive must be mounted in Colab before running any script
 - All scripts mount Drive automatically in Cell 1
-- Paths are hardcoded as /content/drive/MyDrive/disaster_project/
+- Paths are hardcoded as /content/drive/MyDrive/disaster_project/ 
