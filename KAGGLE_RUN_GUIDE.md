@@ -8,7 +8,7 @@
 ## Prerequisites
 
 - Create a Kaggle notebook with **GPU T4 x2** accelerator
-- Add your dataset: `karthiksekar1821/humaid` (contains `train.parquet`, `val.parquet`, `test.parquet`, `label_mapping.json`)
+- Add your dataset: `karthiksekar1821/crisismmd` (contains `train.json`, `val.json`, `test.json`)
 - Add your GitHub repo as a Kaggle dataset or clone it (instructions below)
 
 ---
@@ -47,21 +47,41 @@ REPO_DIR = "/kaggle/working/disaster_decision_support"
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "training"))
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "analysis"))
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "evaluation"))
+sys.path.insert(0, os.path.join(REPO_DIR, "src", "data"))
 
-# Override config paths to point to Kaggle dataset location
-import config
-
-DATA_DIR = "/kaggle/input/datasets/karthiksekar1821/humaid"
-config.TRAIN_FILE = os.path.join(DATA_DIR, "train.parquet")
-config.VAL_FILE   = os.path.join(DATA_DIR, "val.parquet")
-config.TEST_FILE  = os.path.join(DATA_DIR, "test.parquet")
-config.LABEL_MAPPING_FILE = os.path.join(DATA_DIR, "label_mapping.json")
-
-# Output directory for models and results (writable area on Kaggle)
+# Output directory for models and results
 OUTPUT_DIR = "/kaggle/working/output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print(f"Data dir:   {DATA_DIR}")
+# Copy the raw CrisisMMD JSON dataset into the expected location
+import shutil
+RAW_DIR = os.path.join(REPO_DIR, "data", "raw")
+os.makedirs(RAW_DIR, exist_ok=True)
+KAGGLE_DS_DIR = "/kaggle/input/datasets/karthiksekar1821/crisismmd"
+
+for split in ["train.json", "val.json", "test.json"]:
+    try:
+        shutil.copy(os.path.join(KAGGLE_DS_DIR, split), os.path.join(RAW_DIR, split))
+    except FileNotFoundError:
+        print(f"Warning: {split} not found in {KAGGLE_DS_DIR}")
+
+PROCESSED_DIR = os.path.join(REPO_DIR, "data", "processed")
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+# Run data preparation to create parquets and label mappings
+print("Running data preparation...")
+import subprocess
+subprocess.run(["python", "prepare_data.py"], cwd=os.path.join(REPO_DIR, "src", "data"), check=True)
+
+# Override config paths to point to the new processed data
+import config
+
+config.DATA_DIR = PROCESSED_DIR
+config.TRAIN_FILE = os.path.join(config.DATA_DIR, "train.parquet")
+config.VAL_FILE   = os.path.join(config.DATA_DIR, "val.parquet")
+config.TEST_FILE  = os.path.join(config.DATA_DIR, "test.parquet")
+config.LABEL_MAPPING_FILE = os.path.join(config.DATA_DIR, "label_mapping.json")
+
 print(f"Output dir: {OUTPUT_DIR}")
 print(f"NUM_LABELS: {config.NUM_LABELS}")
 print(f"SEEDS:      {config.SEEDS}")

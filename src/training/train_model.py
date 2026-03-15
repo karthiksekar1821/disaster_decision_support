@@ -31,7 +31,7 @@ from sklearn.utils.class_weight import compute_class_weight
 
 from config import (
     NUM_LABELS, SEEDS, TRAINING_ARGS, MODEL_CONFIGS,
-    TRAIN_FILE, VAL_FILE, TEST_FILE, LABEL_MAPPING_FILE,
+    DATA_DIR, TRAIN_FILE, VAL_FILE, TEST_FILE, LABEL_MAPPING_FILE,
 )
 
 
@@ -170,10 +170,15 @@ def train_single_model(
     # Tokenize
     tokenized = tokenize_dataset(dataset, tokenizer, max_length)
 
-    # Compute class weights from training labels
-    train_labels = tokenized["train"]["label"]
-    class_weights = compute_class_weights_from_labels(train_labels, NUM_LABELS)
-    print(f"  Class weights: {[f'{w:.4f}' for w in class_weights]}")
+    # Load pre-computed class weights if available, otherwise compute from training labels
+    weights_path = os.path.join(DATA_DIR, "class_weights.pt")
+    if os.path.exists(weights_path):
+        class_weights = torch.load(weights_path).tolist()
+        print(f"  Loaded pre-computed class weights: {[f'{w:.4f}' for w in class_weights]}")
+    else:
+        train_labels = tokenized["train"]["label"]
+        class_weights = compute_class_weights_from_labels(train_labels, NUM_LABELS)
+        print(f"  Computed class weights: {[f'{w:.4f}' for w in class_weights]}")
 
     # Model
     model = AutoModelForSequenceClassification.from_pretrained(
