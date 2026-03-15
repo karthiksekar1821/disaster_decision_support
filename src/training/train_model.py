@@ -212,7 +212,6 @@ def train_single_model(
         train_dataset=tokenized["train"],
         eval_dataset=tokenized["validation"],
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
     # Train
