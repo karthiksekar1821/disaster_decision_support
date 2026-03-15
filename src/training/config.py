@@ -4,7 +4,7 @@
 
 import torch
 
-NUM_LABELS = 5
+NUM_LABELS = 10
 
 # Seeds for multi-run variance reporting
 SEEDS = [42, 123, 456]

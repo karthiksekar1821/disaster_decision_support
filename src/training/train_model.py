@@ -91,7 +91,7 @@ def load_data():
 
 
 def load_label_mapping():
-    """Load the 5-class label mapping."""
+    """Load the label mapping."""
     with open(LABEL_MAPPING_FILE) as f:
         mapping = json.load(f)
     label2id = mapping["label2id"]
@@ -113,8 +113,9 @@ def tokenize_dataset(dataset, tokenizer, max_length):
 
 def compute_class_weights_from_labels(labels, num_classes):
     """Compute class weights using sklearn's balanced strategy."""
-    classes = np.arange(num_classes)
-    weights = compute_class_weight("balanced", classes=classes, y=np.array(labels))
+    labels_array = np.array(labels)
+    classes = np.unique(labels_array)
+    weights = compute_class_weight("balanced", classes=classes, y=labels_array)
     # Normalize so they sum to num_classes (standard normalization)
     weights = weights / weights.sum() * num_classes
     return weights.tolist()
