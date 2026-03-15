@@ -18,12 +18,12 @@ TRAINING_ARGS = {
     "weight_decay": 0.01,
     "warmup_ratio": 0.06,               # Same for all models
     "eval_strategy": "epoch",
-    "save_strategy": "no",
+    "save_strategy": "epoch",
     "logging_strategy": "epoch",
-    "load_best_model_at_end": False,
+    "load_best_model_at_end": True,
     "metric_for_best_model": "eval_loss", # Use val loss to avoid overfitting
     "greater_is_better": False,
-    "fp16": torch.cuda.is_available(),
+    "save_total_limit": 1,
     "report_to": "none",
 }
 
