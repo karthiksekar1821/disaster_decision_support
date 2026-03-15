@@ -26,14 +26,9 @@ if not os.path.exists("/kaggle/working/disaster_decision_support"):
         "/kaggle/working/disaster_decision_support"
     ], check=True)
 
-# Install dependencies
-subprocess.run([
-    "pip", "install", "-q",
-    "transformers>=4.44.0", "datasets>=2.14.0",
-    "scikit-learn>=1.3.0", "captum>=0.7.0",
-    "seaborn>=0.13.0", "scipy>=1.11.0", "joblib>=1.3.0",
-    "numpy==1.26.4",
-], check=True)
+# Install only what Kaggle doesn't already have (captum for attributions)
+# Do NOT pin numpy — Kaggle's pre-installed version is compatible
+subprocess.run(["pip", "install", "-q", "captum"], check=True)
 
 print("✅ Setup complete.")
 ```
