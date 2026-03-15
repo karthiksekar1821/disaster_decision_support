@@ -13,6 +13,8 @@ def load_local_humaid():
     
     # Rename 'class_label' to 'label' for pipeline compatibility
     if "class_label" in dataset["train"].column_names:
+        if "label" in dataset["train"].column_names:
+            dataset = dataset.remove_columns("label")
         dataset = dataset.rename_column("class_label", "label")
         
     # Drop completely irrelevant columns if they exist, but keep tweet_text and label
