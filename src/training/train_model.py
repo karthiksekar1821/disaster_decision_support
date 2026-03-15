@@ -192,10 +192,16 @@ def train_single_model(
     run_output_dir = os.path.join(output_dir, model_key, f"seed_{seed}")
 
     # Training arguments
+    model_training_args = TRAINING_ARGS.copy()
+    if model_key == "deberta":
+        model_training_args["fp16"] = False
+        # Enable bf16 if supported by the hardware, else fallback to fp32 (both False)
+        model_training_args["bf16"] = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
+    
     training_args = TrainingArguments(
         output_dir=run_output_dir,
         seed=seed,
-        **TRAINING_ARGS,
+        **model_training_args,
     )
 
     # Trainer with class-weighted loss
