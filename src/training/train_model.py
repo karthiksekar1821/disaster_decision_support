@@ -55,7 +55,7 @@ class WeightedTrainer(Trainer):
         logits = outputs.logits
 
         if self.class_weights is not None:
-            weight = self.class_weights.to(logits.device)
+            weight = self.class_weights.to(device=logits.device, dtype=logits.dtype)
             loss_fct = nn.CrossEntropyLoss(weight=weight)
         else:
             loss_fct = nn.CrossEntropyLoss()
