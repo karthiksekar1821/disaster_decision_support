@@ -50,7 +50,7 @@ def save_label_mapping(label2id, id2label, path="../../data/processed/label_mapp
 def compute_and_save_class_weights(labels, num_classes, path="../../data/processed/class_weights.pt"):
     """Compute balanced class weights and save as a PyTorch tensor."""
     labels_array = np.array(labels)
-    classes = np.arange(num_classes)
+    classes = np.unique(labels_array)
     weights = compute_class_weight("balanced", classes=classes, y=labels_array)
     # Normalize so they sum to num_classes
     weights = weights / weights.sum() * num_classes

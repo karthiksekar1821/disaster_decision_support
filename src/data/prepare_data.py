@@ -25,6 +25,41 @@ dataset["train"] = preprocess_split(dataset["train"])
 dataset["validation"] = preprocess_split(dataset["validation"])
 dataset["test"] = preprocess_split(dataset["test"])
 
+import pandas as pd
+from datasets import Dataset
+
+print("Deduplicating splits (majority vote on conflicts, tie-breaker on lower ID)...")
+for split_name in ["train", "validation", "test"]:
+    before_dedup = len(dataset[split_name])
+    df = dataset[split_name].to_pandas()
+    
+    # Drop exact duplicates (same text, same label)
+    df = df.drop_duplicates()
+    
+    # Resolve conflicts (same text, different label) using majority vote
+    # 1. Count occurrences of each (tweet_text, label) pair
+    counts = df.groupby(["tweet_text", "label"]).size().reset_index(name="count")
+    
+    # 2. Sort so that for each tweet, the label with highest count comes first
+    #    On tie (same count), alphabetical sort on label breaks tie consistently
+    counts = counts.sort_values(by=["tweet_text", "count", "label"], ascending=[True, False, True])
+    
+    # 3. Drop all duplicates keeping only the first (highest count) label
+    resolved = counts.drop_duplicates(subset=["tweet_text"], keep="first")
+    
+    # 4. Filter the original dataframe to keep only the resolved (text, label) pairs
+    merged = pd.merge(df, resolved[["tweet_text", "label"]], on=["tweet_text", "label"], how="inner")
+    
+    # 5. Drop any lingering duplicates (same text and label) from original df
+    merged = merged.drop_duplicates(subset=["tweet_text"])
+    
+    dataset[split_name] = Dataset.from_pandas(merged)
+    # Ensure low_info column remains but any index pandas adds is removed
+    if "__index_level_0__" in dataset[split_name].column_names:
+        dataset[split_name] = dataset[split_name].remove_columns("__index_level_0__")
+        
+    print(f"  {split_name}: {before_dedup} → {len(dataset[split_name])} (dropped {before_dedup - len(dataset[split_name])} duplicates)")
+
 print(f"Filtering to {NUM_LABELS} target classes...")
 print(f"  Keeping: {TARGET_CLASSES}")
 for split_name in ["train", "validation", "test"]:
@@ -59,6 +94,6 @@ for split_name in ["train", "validation", "test"]:
     print(f"\n{split_name}: {len(split)} samples")
     class_counts = Counter(split["label"])
     for cls_id, count in sorted(class_counts.items()):
-        print(f"  {id2label[cls_id]}: {count}")
+        print(f"  {id2label[int(cls_id)]}: {count}")
 
 print("\nData preparation complete.")
