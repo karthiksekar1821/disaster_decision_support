@@ -8,7 +8,7 @@ Run from src/data/:
     python prepare_data.py
 """
 
-from split import load_local_crisismmd, preprocess_split, save_processed_splits
+from split import load_local_humaid, preprocess_split, save_processed_splits
 from label_utils import (
     filter_to_target_classes, create_label_mapping,
     encode_labels, save_label_mapping, compute_and_save_class_weights,
@@ -17,8 +17,8 @@ from label_utils import (
 
 NUM_LABELS = len(TARGET_CLASSES)
 
-print("Loading CrisisMMD dataset from JSON...")
-dataset = load_local_crisismmd()
+print("Loading HumAID dataset from Parquet...")
+dataset = load_local_humaid()
 
 print("Preprocessing splits (cleaning text, removing low-info)...")
 dataset["train"] = preprocess_split(dataset["train"])

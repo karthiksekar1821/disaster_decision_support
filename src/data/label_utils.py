@@ -8,8 +8,8 @@ from sklearn.utils.class_weight import compute_class_weight
 # Records with labels NOT in this list are dropped during data preparation.
 
 TARGET_CLASSES = sorted([
-    "affected_individuals",
     "infrastructure_and_utility_damage",
+    "injured_or_dead_people",
     "not_humanitarian",
     "other_relevant_information",
     "rescue_volunteering_or_donation_effort",

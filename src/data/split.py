@@ -1,22 +1,33 @@
 import json
-from datasets import Dataset, DatasetDict
+from datasets import Dataset, DatasetDict, load_dataset
 from preprocessing import clean_text, is_low_information
 
 
-def load_local_crisismmd():
-    """Load CrisisMMD dataset from raw JSON files."""
-    splits = {}
-    for split_name, filename in [
-        ("train", "../../data/raw/train.json"),
-        ("validation", "../../data/raw/val.json"),
-        ("test", "../../data/raw/test.json"),
-    ]:
-        with open(filename) as f:
-            records = json.load(f)
-        # Keep only tweet_text and label columns
-        rows = [{"tweet_text": r["tweet_text"], "label": r["label"]} for r in records]
-        splits[split_name] = Dataset.from_list(rows)
-    return DatasetDict(splits)
+def load_local_humaid():
+    """Load HumAID dataset from raw Parquet files."""
+    dataset = load_dataset("parquet", data_files={
+        "train": "../../data/raw/train.parquet",
+        "validation": "../../data/raw/val.parquet",
+        "test": "../../data/raw/test.parquet",
+    })
+    
+    # Rename 'class_label' to 'label' for pipeline compatibility
+    if "class_label" in dataset["train"].column_names:
+        dataset = dataset.rename_column("class_label", "label")
+        
+    # Drop completely irrelevant columns if they exist, but keep tweet_text and label
+    def filter_cols(split_ds):
+        cols_to_keep = ["tweet_text", "label"]
+        cols_to_remove = [c for c in split_ds.column_names if c not in cols_to_keep]
+        if cols_to_remove:
+            split_ds = split_ds.remove_columns(cols_to_remove)
+        return split_ds
+
+    dataset["train"] = filter_cols(dataset["train"])
+    dataset["validation"] = filter_cols(dataset["validation"])
+    dataset["test"] = filter_cols(dataset["test"])
+    
+    return dataset
 
 
 def preprocess_split(split_dataset):

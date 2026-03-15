@@ -8,7 +8,7 @@
 ## Prerequisites
 
 - Create a Kaggle notebook with **GPU T4 x2** accelerator
-- Add your dataset: `karthiksekar1821/crisismmd` (contains `train.json`, `val.json`, `test.json`)
+- Add your dataset: `karthiksekar1821/humaid` (contains `train.parquet`, `val.parquet`, `test.parquet`)
 - Add your GitHub repo as a Kaggle dataset or clone it (instructions below)
 
 ---
@@ -53,13 +53,13 @@ sys.path.insert(0, os.path.join(REPO_DIR, "src", "data"))
 OUTPUT_DIR = "/kaggle/working/output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Copy the raw CrisisMMD JSON dataset into the expected location
+# Copy the raw HumAID Parquet dataset into the expected location
 import shutil
 RAW_DIR = os.path.join(REPO_DIR, "data", "raw")
 os.makedirs(RAW_DIR, exist_ok=True)
-KAGGLE_DS_DIR = "/kaggle/input/datasets/karthiksekar1821/crisismmd"
+KAGGLE_DS_DIR = "/kaggle/input/datasets/karthiksekar1821/humaid"
 
-for split in ["train.json", "val.json", "test.json"]:
+for split in ["train.parquet", "val.parquet", "test.parquet"]:
     try:
         shutil.copy(os.path.join(KAGGLE_DS_DIR, split), os.path.join(RAW_DIR, split))
     except FileNotFoundError:

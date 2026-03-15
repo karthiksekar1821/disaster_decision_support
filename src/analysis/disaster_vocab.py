@@ -32,7 +32,7 @@ DISASTER_VOCAB = {
         "blanket", "tent", "medicine", "medical", "doctor", "nurse",
         "food", "clothing", "water", "distribute", "distribution",
     },
-    "affected_individuals": {
+    "injured_or_dead_people": {
         "dead", "death", "deaths", "died", "killed", "kill",
         "injured", "injury", "injuries", "hurt", "wound", "wounded",
         "missing", "found", "body", "bodies", "victim", "victims",
