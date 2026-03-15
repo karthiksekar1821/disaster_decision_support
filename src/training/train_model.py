@@ -191,23 +191,6 @@ def train_single_model(
     # Output directory for this specific run
     run_output_dir = os.path.join(output_dir, model_key, f"seed_{seed}")
 
-    # Training arguments
-    training_args_dict = TRAINING_ARGS.copy()
-    if model_key == "deberta":
-        training_args_dict["fp16"] = False
-        training_args_dict["bf16"] = True
-    else:
-        training_args_dict["fp16"] = torch.cuda.is_available()
-        
-    if model_key == "deberta":
-        print(f"  DeBERTa training args: fp16={training_args_dict.get('fp16')}, bf16={training_args_dict.get('bf16')}")
-    
-    training_args = TrainingArguments(
-        output_dir=run_output_dir,
-        seed=seed,
-        **training_args_dict,
-    )
-
     # Trainer with class-weighted loss
     trainer = WeightedTrainer(
         class_weights=class_weights,
