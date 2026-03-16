@@ -191,6 +191,13 @@ def train_single_model(
     # Output directory for this specific run
     run_output_dir = os.path.join(output_dir, model_key, f"seed_{seed}")
 
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=run_output_dir,
+        seed=seed,
+        **TRAINING_ARGS,
+    )
+
     # Trainer with class-weighted loss
     trainer = WeightedTrainer(
         class_weights=class_weights,

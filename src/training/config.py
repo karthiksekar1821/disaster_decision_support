@@ -24,6 +24,7 @@ TRAINING_ARGS = {
     "metric_for_best_model": "eval_loss", # Use val loss to avoid overfitting
     "greater_is_better": False,
     "save_total_limit": 1,
+    "fp16": torch.cuda.is_available(),
     "report_to": "none",
 }
 
@@ -34,7 +35,7 @@ MODEL_CONFIGS = {
         "max_length": 128,
     },
     "deberta": {
-        "model_name": "microsoft/deberta-v3-base",
+        "model_name": "microsoft/deberta-base",
         "max_length": 128,
     },
     "electra": {
