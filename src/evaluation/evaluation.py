@@ -2,14 +2,16 @@
 Comprehensive Evaluation Script.
 
 Covers:
-1. Individual model results (per-model, per-seed, mean ± std)
+1. Individual model results (all 8 models: 6 transformers + CNN + BiLSTM)
 2. Simple baselines (TF-IDF + SVM, majority class)
 3. Dynamic ensemble results (Novelty 1)
 4. Class-adaptive confidence (Novelty 2)
 5. Attribution reliability (Novelty 3)
 6. Statistical significance (McNemar's test)
 7. Confusion matrices
-8. Error analysis
+8. Training curves (from training_history.json)
+9. Model style performance heatmap
+10. Error analysis
 
 Usage: Import and run functions from a Colab notebook.
 """
@@ -141,7 +143,7 @@ def plot_confusion_matrix(labels, preds, class_names, title, save_path=None):
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
 
 def plot_per_class_f1_comparison(
@@ -149,10 +151,11 @@ def plot_per_class_f1_comparison(
 ):
     """Plot per-class F1 comparison across models."""
     n_classes = len(class_names)
+    n_models = len(model_results)
     x = np.arange(n_classes)
-    width = 0.8 / len(model_results)
+    width = 0.8 / max(n_models, 1)
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, ax = plt.subplots(figsize=(max(14, n_models * 2), 7))
 
     for i, (name, results) in enumerate(model_results.items()):
         f1_vals = f1_score(
@@ -167,16 +170,16 @@ def plot_per_class_f1_comparison(
     ax.set_xlabel("Class", fontsize=12)
     ax.set_ylabel("F1 Score", fontsize=12)
     ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.set_xticks(x + width * (len(model_results) - 1) / 2)
+    ax.set_xticks(x + width * (n_models - 1) / 2)
     ax.set_xticklabels(class_names, rotation=30, ha="right", fontsize=10)
     ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=11)
+    ax.legend(fontsize=9, loc="upper left", bbox_to_anchor=(1.0, 1.0))
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
 
 def plot_macro_f1_summary(model_results, title, save_path=None):
@@ -187,7 +190,7 @@ def plot_macro_f1_summary(model_results, title, save_path=None):
         for r in model_results.values()
     ]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(max(10, len(names) * 1.2), 6))
     bars = ax.bar(names, f1s, alpha=0.85, width=0.5)
 
     for bar, val in zip(bars, f1s):
@@ -195,17 +198,195 @@ def plot_macro_f1_summary(model_results, title, save_path=None):
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.003,
             f"{val:.4f}",
-            ha="center", va="bottom", fontsize=11, fontweight="bold",
+            ha="center", va="bottom", fontsize=10, fontweight="bold",
         )
 
     ax.set_ylabel("Macro F1 Score", fontsize=12)
     ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=10)
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.close()
+
+
+# ── Training Curves ──────────────────────────────────────────────────────────
+
+def plot_training_curves(history_dir, model_name, save_path=None):
+    """
+    Plot training curves for a single model.
+
+    Reads training_history.json and plots:
+    - Train loss and val loss on the primary y-axis
+    - Val Macro F1 on the secondary y-axis
+
+    Args:
+        history_dir: directory containing training_history.json
+        model_name: display name of the model
+        save_path: path to save the plot
+    """
+    history_path = os.path.join(history_dir, "training_history.json")
+    if not os.path.exists(history_path):
+        print(f"  Warning: {history_path} not found, skipping training curves for {model_name}")
+        return
+
+    with open(history_path, "r") as f:
+        history = json.load(f)
+
+    epochs = history["epoch"]
+    train_loss = history["train_loss"]
+    val_loss = history["val_loss"]
+    val_macro_f1 = history["val_macro_f1"]
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    # Loss on primary axis
+    ax1.plot(epochs, train_loss, "b-o", label="Train Loss", markersize=5)
+    ax1.plot(epochs, val_loss, "r-o", label="Val Loss", markersize=5)
+    ax1.set_xlabel("Epoch", fontsize=12)
+    ax1.set_ylabel("Loss", fontsize=12, color="black")
+    ax1.tick_params(axis="y")
+    ax1.legend(loc="upper left", fontsize=10)
+
+    # Macro F1 on secondary axis
+    ax2 = ax1.twinx()
+    ax2.plot(epochs, val_macro_f1, "g-s", label="Val Macro F1", markersize=5)
+    ax2.set_ylabel("Macro F1", fontsize=12, color="green")
+    ax2.tick_params(axis="y", labelcolor="green")
+    ax2.legend(loc="upper right", fontsize=10)
+
+    ax1.set_title(f"Training Curves: {model_name}", fontsize=14, fontweight="bold")
+    ax1.grid(axis="both", alpha=0.3)
+    fig.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+def plot_all_training_curves(output_dir, model_keys, save_dir):
+    """Plot training curves for all models."""
+    os.makedirs(save_dir, exist_ok=True)
+    for model_key in model_keys:
+        history_dir = os.path.join(output_dir, model_key)
+        save_path = os.path.join(save_dir, f"training_curves_{model_key}.png")
+        plot_training_curves(history_dir, model_key, save_path)
+
+
+# ── Calibration Diagram ─────────────────────────────────────────────────────
+
+def plot_calibration_diagram(model_results, n_bins=10, save_path=None):
+    """Plot reliability/calibration diagram for all models."""
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    for name, results in model_results.items():
+        if "probs" not in results:
+            continue
+
+        probs = results["probs"]
+        preds = results["preds"]
+        labels = results["labels"]
+
+        # Get predicted class probability for each sample
+        predicted_probs = np.array([probs[i, preds[i]] for i in range(len(preds))])
+
+        # Bin by predicted probability
+        bin_boundaries = np.linspace(0, 1, n_bins + 1)
+        bin_accuracies = []
+        bin_confidences = []
+
+        for b in range(n_bins):
+            lo, hi = bin_boundaries[b], bin_boundaries[b + 1]
+            mask = (predicted_probs >= lo) & (predicted_probs < hi)
+            if mask.sum() > 0:
+                bin_acc = (preds[mask] == labels[mask]).mean()
+                bin_conf = predicted_probs[mask].mean()
+                bin_accuracies.append(bin_acc)
+                bin_confidences.append(bin_conf)
+
+        ax.plot(bin_confidences, bin_accuracies, "-o", label=name, markersize=4)
+
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.5, label="Perfect calibration")
+    ax.set_xlabel("Mean Predicted Probability", fontsize=12)
+    ax.set_ylabel("Fraction of Positives", fontsize=12)
+    ax.set_title("Calibration Diagram", fontsize=14, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# ── Confidence Distribution ─────────────────────────────────────────────────
+
+def plot_confidence_distributions(model_results, save_path=None):
+    """Plot confidence distribution for all models."""
+    n_models = len(model_results)
+    cols = min(3, n_models)
+    rows = (n_models + cols - 1) // cols
+
+    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows))
+    if n_models == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+
+    for idx, (name, results) in enumerate(model_results.items()):
+        ax = axes[idx]
+        if "probs" not in results:
+            ax.set_visible(False)
+            continue
+
+        probs = results["probs"]
+        preds = results["preds"]
+        max_probs = np.max(probs, axis=1)
+
+        ax.hist(max_probs, bins=50, alpha=0.7, edgecolor="black", linewidth=0.5)
+        ax.set_title(f"{name}", fontsize=12, fontweight="bold")
+        ax.set_xlabel("Max Probability", fontsize=10)
+        ax.set_ylabel("Count", fontsize=10)
+        ax.axvline(np.mean(max_probs), color="red", linestyle="--",
+                   label=f"Mean: {np.mean(max_probs):.3f}")
+        ax.legend(fontsize=9)
+
+    # Hide unused axes
+    for idx in range(n_models, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle("Confidence Distributions per Model", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# ── Consolidated Results Table ───────────────────────────────────────────────
+
+def print_consolidated_results(model_results, ensemble_results, class_names):
+    """Print a consolidated results table for all models."""
+    print(f"\n{'='*80}")
+    print(f"CONSOLIDATED RESULTS TABLE")
+    print(f"{'='*80}")
+    print(f"{'Model':<15} {'Macro F1':>10} {'Accuracy':>10} {'Per-Class F1'}")
+    print(f"{'-'*80}")
+
+    all_results = {**model_results, "Ensemble": ensemble_results}
+
+    for name, results in all_results.items():
+        f1 = f1_score(results["labels"], results["preds"], average="macro")
+        acc = accuracy_score(results["labels"], results["preds"])
+        per_class = f1_score(
+            results["labels"], results["preds"],
+            average=None, labels=list(range(len(class_names))),
+        )
+        per_class_str = " ".join([f"{v:.3f}" for v in per_class])
+        print(f"{name:<15} {f1:>10.4f} {acc:>10.4f} {per_class_str}")
+
+    print(f"{'='*80}")
 
 
 # ── Comprehensive Report ─────────────────────────────────────────────────────
@@ -221,12 +402,15 @@ def run_full_evaluation(
     test_labels,
     class_names,
     output_dir,
+    model_output_dir=None,
+    style_performance_path=None,
 ):
     """
     Run the full evaluation pipeline and save all results.
 
     Args:
         model_test_results: dict of model_name -> {"preds", "labels", "probs"}
+            (can include up to 8 models)
         ensemble_test_results: {"preds", "labels", "probs"}
         selective_results: results from adaptive_confidence
         combined_results: results from attribution_filter combined_abstention
@@ -236,6 +420,8 @@ def run_full_evaluation(
         test_labels: array of test labels
         class_names: list of class name strings
         output_dir: directory to save results
+        model_output_dir: base dir for model outputs (for training curves)
+        style_performance_path: path to model_style_performance.json
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -323,9 +509,16 @@ def run_full_evaluation(
     print(f"  Ensemble vs {best_model_name}: "
           f"chi2={chi2_stat:.4f}, p={p_val:.4f}, significant={sig}")
 
-    # 7. Confusion matrices
+    # 7. Confusion matrices — for each model + ensemble
     print("\n7. CONFUSION MATRICES")
     print("-"*40)
+    for name, results in model_test_results.items():
+        plot_confusion_matrix(
+            results["labels"], results["preds"], class_names,
+            f"{name} Confusion Matrix",
+            save_path=os.path.join(output_dir, f"confusion_matrix_{name.lower().replace(' ', '_')}.png"),
+        )
+
     plot_confusion_matrix(
         ensemble_test_results["labels"],
         ensemble_test_results["preds"],
@@ -339,7 +532,7 @@ def run_full_evaluation(
     all_results["Ensemble"] = ensemble_test_results
     plot_per_class_f1_comparison(
         all_results, class_names,
-        "Per-Class F1: Individual Models vs Dynamic Ensemble",
+        "Per-Class F1: All Models vs Dynamic Ensemble",
         save_path=os.path.join(output_dir, "per_class_f1_comparison.png"),
     )
 
@@ -355,6 +548,50 @@ def run_full_evaluation(
         "Macro F1 Comparison: Baselines vs Models vs Ensemble",
         save_path=os.path.join(output_dir, "macro_f1_summary.png"),
     )
+
+    # 10. Calibration diagram
+    models_with_probs = {
+        name: r for name, r in model_test_results.items() if "probs" in r
+    }
+    if ensemble_test_results.get("probs") is not None:
+        models_with_probs["Ensemble"] = ensemble_test_results
+    plot_calibration_diagram(
+        models_with_probs,
+        save_path=os.path.join(output_dir, "calibration_diagram.png"),
+    )
+
+    # 11. Confidence distributions
+    plot_confidence_distributions(
+        models_with_probs,
+        save_path=os.path.join(output_dir, "confidence_distributions.png"),
+    )
+
+    # 12. Training curves (if model_output_dir provided)
+    if model_output_dir:
+        print("\n8. TRAINING CURVES")
+        print("-"*40)
+        transformer_keys = ["roberta", "deberta", "electra", "bert", "xlnet", "xtremedistil"]
+        plot_all_training_curves(model_output_dir, transformer_keys, output_dir)
+        print("  Training curve plots saved.")
+
+    # 13. Model style performance heatmap
+    if style_performance_path and os.path.exists(style_performance_path):
+        print("\n9. MODEL STYLE PERFORMANCE HEATMAP")
+        print("-"*40)
+        try:
+            from model_characterisation import plot_style_performance_heatmap, STYLE_CATEGORIES
+            with open(style_performance_path, "r") as f:
+                perf_matrix = json.load(f)
+            plot_style_performance_heatmap(
+                perf_matrix,
+                list(perf_matrix.keys()),
+                save_path=os.path.join(output_dir, "model_style_heatmap.png"),
+            )
+        except Exception as e:
+            print(f"  Warning: Could not generate style heatmap: {e}")
+
+    # 14. Consolidated results table
+    print_consolidated_results(model_test_results, ensemble_test_results, class_names)
 
     print("\n" + "="*70)
     print("EVALUATION COMPLETE")

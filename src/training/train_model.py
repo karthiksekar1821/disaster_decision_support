@@ -1,13 +1,15 @@
 """
-Unified training script for all three transformer models.
-Supports class-weighted loss, multi-seed training, and consistent hyperparameters.
+Unified training script for all transformer models.
+Supports class-weighted loss, training loss logging, and optional
+hyperparameter loading from Optuna tuning results.
 
 Usage (from src/training/):
     python train_model.py --model roberta --output_dir /path/to/output
-    python train_model.py --model deberta --output_dir /path/to/output
-    python train_model.py --model electra --output_dir /path/to/output
+    python train_model.py --model bert --output_dir /path/to/output
+    python train_model.py --model xlnet --output_dir /path/to/output
+    python train_model.py --model xtremedistil --output_dir /path/to/output
 
-For Colab/Kaggle, import and call train_single_model() or train_multi_seed().
+For Colab/Kaggle, import and call train_single_model().
 """
 
 import os
@@ -23,6 +25,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     TrainingArguments,
     Trainer,
+    TrainerCallback,
     EarlyStoppingCallback,
     set_seed,
 )
@@ -30,7 +33,7 @@ from sklearn.metrics import f1_score, accuracy_score
 from sklearn.utils.class_weight import compute_class_weight
 
 from config import (
-    NUM_LABELS, SEEDS, TRAINING_ARGS, MODEL_CONFIGS,
+    NUM_LABELS, SEED, TRAINING_ARGS, MODEL_CONFIGS,
     DATA_DIR, TRAIN_FILE, VAL_FILE, TEST_FILE, LABEL_MAPPING_FILE,
 )
 
@@ -62,6 +65,55 @@ class WeightedTrainer(Trainer):
 
         loss = loss_fct(logits, labels)
         return (loss, outputs) if return_outputs else loss
+
+
+# ── Training Loss Callback ───────────────────────────────────────────────────
+
+class TrainingLossCallback(TrainerCallback):
+    """
+    Captures training loss, validation loss, and validation Macro F1
+    at the end of each epoch. Saves a training_history.json file after
+    training completes.
+    """
+
+    def __init__(self, output_dir):
+        super().__init__()
+        self.output_dir = output_dir
+        self.history = {
+            "epoch": [],
+            "train_loss": [],
+            "val_loss": [],
+            "val_macro_f1": [],
+        }
+        self._current_train_loss = None
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Capture training loss from logs emitted during training."""
+        if logs is not None and "loss" in logs:
+            self._current_train_loss = logs["loss"]
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Capture validation metrics after each evaluation (end of epoch)."""
+        if metrics is not None:
+            epoch_num = int(state.epoch) if state.epoch else len(self.history["epoch"]) + 1
+            self.history["epoch"].append(epoch_num)
+            self.history["train_loss"].append(
+                self._current_train_loss if self._current_train_loss is not None else 0.0
+            )
+            self.history["val_loss"].append(metrics.get("eval_loss", 0.0))
+            self.history["val_macro_f1"].append(metrics.get("eval_macro_f1", 0.0))
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Save the full training history to JSON after training completes."""
+        os.makedirs(self.output_dir, exist_ok=True)
+        history_path = os.path.join(self.output_dir, "training_history.json")
+        # Convert to serializable types
+        serializable = {
+            k: [float(v) for v in vals] for k, vals in self.history.items()
+        }
+        with open(history_path, "w") as f:
+            json.dump(serializable, f, indent=2)
+        print(f"  Training history saved to {history_path}")
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
@@ -99,15 +151,28 @@ def load_label_mapping():
     return label2id, id2label
 
 
-def tokenize_dataset(dataset, tokenizer, max_length):
-    """Tokenize all splits of a dataset."""
+def tokenize_dataset(dataset, tokenizer, max_length, model_key=None):
+    """
+    Tokenize all splits of a dataset.
+
+    For XLNet: uses left padding and removes token_type_ids.
+    """
+    # XLNet requires left padding
+    if model_key == "xlnet":
+        tokenizer.padding_side = "left"
+
     def tokenize_fn(examples):
-        return tokenizer(
+        encoded = tokenizer(
             examples["tweet_text"],
             truncation=True,
             padding="max_length",
             max_length=max_length,
         )
+        # XLNet: remove token_type_ids to avoid shape mismatch issues
+        if model_key == "xlnet" and "token_type_ids" in encoded:
+            del encoded["token_type_ids"]
+        return encoded
+
     return dataset.map(tokenize_fn, batched=True)
 
 
@@ -121,22 +186,37 @@ def compute_class_weights_from_labels(labels, num_classes):
     return weights.tolist()
 
 
+def load_best_hyperparams(model_key):
+    """
+    Load Optuna-tuned best hyperparameters for a model if available.
+
+    Returns dict of hyperparams or None if no tuning results exist.
+    """
+    hp_path = os.path.join(DATA_DIR, f"best_hyperparams_{model_key}.json")
+    if os.path.exists(hp_path):
+        with open(hp_path, "r") as f:
+            params = json.load(f)
+        print(f"  Loaded tuned hyperparameters from {hp_path}")
+        return params
+    return None
+
+
 # ── Training ─────────────────────────────────────────────────────────────────
 
 def train_single_model(
     model_key,
-    seed,
-    output_dir,
+    seed=SEED,
+    output_dir=".",
     dataset=None,
     label2id=None,
     id2label=None,
 ):
     """
-    Train a single model with a single seed.
+    Train a single model with seed=42.
 
     Args:
-        model_key: One of 'roberta', 'deberta', 'electra'
-        seed: Random seed
+        model_key: One of 'roberta', 'deberta', 'electra', 'bert', 'xlnet', 'xtremedistil'
+        seed: Random seed (default: 42)
         output_dir: Base output directory
         dataset: Pre-loaded dataset (optional, will load if None)
         label2id: Label mapping (optional, will load if None)
@@ -167,8 +247,8 @@ def train_single_model(
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Tokenize
-    tokenized = tokenize_dataset(dataset, tokenizer, max_length)
+    # Tokenize (with XLNet-specific handling)
+    tokenized = tokenize_dataset(dataset, tokenizer, max_length, model_key=model_key)
 
     # Load pre-computed class weights if available, otherwise compute from training labels
     weights_path = os.path.join(DATA_DIR, "class_weights.pt")
@@ -189,14 +269,28 @@ def train_single_model(
     )
 
     # Output directory for this specific run
-    run_output_dir = os.path.join(output_dir, model_key, f"seed_{seed}")
+    run_output_dir = os.path.join(output_dir, model_key)
+
+    # Build training arguments — start with defaults, then override with tuned params
+    train_kwargs = dict(TRAINING_ARGS)
+
+    # Check for Optuna-tuned hyperparameters
+    best_hp = load_best_hyperparams(model_key)
+    if best_hp is not None:
+        for key in ["learning_rate", "warmup_ratio", "weight_decay", "per_device_train_batch_size"]:
+            if key in best_hp:
+                train_kwargs[key] = best_hp[key]
+                print(f"  Using tuned {key}: {best_hp[key]}")
 
     # Training arguments
     training_args = TrainingArguments(
         output_dir=run_output_dir,
         seed=seed,
-        **TRAINING_ARGS,
+        **train_kwargs,
     )
+
+    # Create training loss callback
+    loss_callback = TrainingLossCallback(output_dir=run_output_dir)
 
     # Trainer with class-weighted loss
     trainer = WeightedTrainer(
@@ -206,7 +300,10 @@ def train_single_model(
         train_dataset=tokenized["train"],
         eval_dataset=tokenized["validation"],
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+        callbacks=[
+            EarlyStoppingCallback(early_stopping_patience=2),
+            loss_callback,
+        ],
     )
 
     # Train
@@ -271,102 +368,23 @@ def train_single_model(
     return results
 
 
-# ── Multi-Seed Training ──────────────────────────────────────────────────────
-
-def train_multi_seed(model_key, output_dir, seeds=None):
-    """
-    Train a model across multiple seeds and aggregate results.
-
-    Returns:
-        dict with per-seed results and aggregated metrics (mean ± std)
-    """
-    if seeds is None:
-        seeds = SEEDS
-
-    # Load data and labels once
-    dataset = load_data()
-    label2id, id2label = load_label_mapping()
-
-    all_results = []
-    for seed in seeds:
-        result = train_single_model(
-            model_key=model_key,
-            seed=seed,
-            output_dir=output_dir,
-            dataset=dataset,
-            label2id=label2id,
-            id2label=id2label,
-        )
-        all_results.append(result)
-
-    # Aggregate metrics
-    test_f1s = [r["test_metrics"]["eval_macro_f1"] for r in all_results]
-    test_accs = [r["test_metrics"]["eval_accuracy"] for r in all_results]
-    val_f1s = [r["val_metrics"]["eval_macro_f1"] for r in all_results]
-    val_accs = [r["val_metrics"]["eval_accuracy"] for r in all_results]
-
-    summary = {
-        "model_key": model_key,
-        "seeds": seeds,
-        "test_macro_f1_mean": float(np.mean(test_f1s)),
-        "test_macro_f1_std": float(np.std(test_f1s)),
-        "test_accuracy_mean": float(np.mean(test_accs)),
-        "test_accuracy_std": float(np.std(test_accs)),
-        "val_macro_f1_mean": float(np.mean(val_f1s)),
-        "val_macro_f1_std": float(np.std(val_f1s)),
-        "val_accuracy_mean": float(np.mean(val_accs)),
-        "val_accuracy_std": float(np.std(val_accs)),
-    }
-
-    print(f"\n{'='*70}")
-    print(f"MULTI-SEED SUMMARY FOR {model_key.upper()}")
-    print(f"{'='*70}")
-    print(f"  Test Macro F1:  {summary['test_macro_f1_mean']:.4f} ± {summary['test_macro_f1_std']:.4f}")
-    print(f"  Test Accuracy:  {summary['test_accuracy_mean']:.4f} ± {summary['test_accuracy_std']:.4f}")
-    print(f"  Val Macro F1:   {summary['val_macro_f1_mean']:.4f} ± {summary['val_macro_f1_std']:.4f}")
-    print(f"  Val Accuracy:   {summary['val_accuracy_mean']:.4f} ± {summary['val_accuracy_std']:.4f}")
-
-    # Save summary
-    summary_path = os.path.join(output_dir, model_key, "multi_seed_summary.json")
-    os.makedirs(os.path.dirname(summary_path), exist_ok=True)
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=4)
-
-    return {"per_seed": all_results, "summary": summary}
-
-
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a transformer model")
     parser.add_argument(
         "--model", type=str, required=True,
-        choices=["roberta", "deberta", "electra"],
-        help="Which model to train"
+        choices=list(MODEL_CONFIGS.keys()),
+        help="Which model to train",
     )
     parser.add_argument(
         "--output_dir", type=str, required=True,
-        help="Base output directory for model checkpoints and predictions"
-    )
-    parser.add_argument(
-        "--seeds", type=int, nargs="+", default=SEEDS,
-        help="Random seeds for multi-seed training"
-    )
-    parser.add_argument(
-        "--single_seed", type=int, default=None,
-        help="Train with a single seed only (overrides --seeds)"
+        help="Base output directory for model checkpoints and predictions",
     )
     args = parser.parse_args()
 
-    if args.single_seed is not None:
-        train_single_model(
-            model_key=args.model,
-            seed=args.single_seed,
-            output_dir=args.output_dir,
-        )
-    else:
-        train_multi_seed(
-            model_key=args.model,
-            output_dir=args.output_dir,
-            seeds=args.seeds,
-        )
+    train_single_model(
+        model_key=args.model,
+        seed=SEED,
+        output_dir=args.output_dir,
+    )

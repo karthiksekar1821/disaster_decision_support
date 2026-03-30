@@ -68,6 +68,14 @@ def compute_attributions_for_batch(
         embedding_layer = model.deberta.embeddings
     elif hasattr(model, "electra"):
         embedding_layer = model.electra.embeddings
+    elif hasattr(model, "bert"):
+        embedding_layer = model.bert.embeddings
+    elif hasattr(model, "transformer"):
+        # XLNet uses model.transformer.word_embedding
+        embedding_layer = model.transformer.word_embedding
+    elif hasattr(model, "distilbert"):
+        # XtremeDistil is a DistilBERT variant
+        embedding_layer = model.distilbert.embeddings
     else:
         # Generic fallback
         embedding_layer = list(model.children())[0].embeddings

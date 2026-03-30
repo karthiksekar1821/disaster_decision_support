@@ -1,5 +1,5 @@
 """
-Data preparation script for CrisisMMD dataset.
+Data preparation script for HumAID dataset.
 
 Loads raw JSON, cleans text, filters to 5 target classes,
 encodes labels, computes class weights, and saves processed parquet.

@@ -1,228 +1,423 @@
-# Disaster Decision Support System: Comprehensive Technical Documentation
-
-This document provides a complete, line-by-line breakdown and conceptual overview of the machine learning pipeline developed for the Disaster Decision Support project. 
-
-It is structured specifically for academic review, explaining not only **what** the code does, but exactly **why** every engineering decision was made.
+# PROJECT DOCUMENTATION
+## Disaster Decision Support System — B.Tech Final Year Project
 
 ---
 
-## 1. File-by-File Technical Breakdown
-
-### 1. `src/data/prepare_data.py`
-**Purpose**: The central orchestration script for preparing the dataset before model tokenization. It executes loading, text preprocessing, strict class filtering, data deduplication, label numerical mapping, and sample weight calculation.
-**Dependencies**:
-- `pandas`, `datasets (Dataset)`: For high-performance tabular transformations and integration with HuggingFace.
-- `collections.Counter`: To tally and display the final distributions.
-- Functions from `split.py` and `label_utils.py`.
-
-**Key Pipeline Steps**:
-1. **Loading Data**: Calls `load_local_humaid()` to read incoming raw `parquet` data into HuggingFace Dataset dictionaries.
-2. **Text Cleaning**: Maps `preprocess_split()` over all examples to remove noise (URLs, @mentions) and dynamically calculate a `low_info` flag.
-3. **Target Filtering**: Explicitly drops any records that do not belong to the 5 requested humanitarian categories.
-4. **Deduplication with Conflict Resolution**: 
-   - It converts splits to pandas dataframes.
-   - Drops generic exact duplicates.
-   - If identical tweets have *conflicting* labels, it uses a groupby and `size()` tally to execute a **majority vote**. Whichever label is assigned to the text most frequently is kept. Ties are broken deterministically by sorting.
-5. **Class Weight Computation**: Calculates dynamic loss scaling values inversely proportional to class frequencies to combat data imbalance.
-6. **Output**: Both the finalized mapped `parquet` datasets and the weights/schemas are serialized to `data/processed/`.
-
-### 2. `src/data/preprocessing.py`
-**Purpose**: Systematically normalizes unstructured social media text to improve the transformer embedding representations.
-**Dependencies**: `re` (Regular Expressions for text matching).
-
-**Key Functions**:
-- `remove_urls(text)`: Prevents random HTTP strings from fracturing into meaningless subword tokens.
-- `remove_mentions(text)`: Removes `@username` handles because personal identities do not generalize to humanitarian event types.
-- `remove_hashtag_symbol(text)`: Retains the actual word inside a hashtag (e.g., `#earthquake` → `earthquake`) because the semantic meaning is critical to disaster classification, but the symbol itself is noise.
-- `normalize_whitespace(text)`: Compresses multiple spaces/newlines into a single space.
-- `is_low_information(text, min_tokens=3)`: Flags tweets that are too short to contain actionable semantic meaning.
-
-### 3. `src/data/split.py`
-**Purpose**: Manages the ingestion logic for the Parquet binaries and guarantees the columns conform to the pipeline expectations.
-**Dependencies**: `datasets.load_dataset`.
-
-**Key Logic**:
-- `load_local_humaid()`: Directly parses `"train"`, `"validation"`, and `"test"` parquet files.
-- **Column Standardization**: It specifically looks for `class_label` and renames it to `label`. If a prior `label` column exists from a previous run, it aggressively drops it first to avoid collision schema errors.
-- **Stratification context**: While the raw splits are provided upfront by the HumAID creators, *stratification* refers to ensuring the proportions of the 5 classes are roughly equal across Train, Val, and Test splits. This matters immensely in imbalanced datasets so the model doesn't test on a class ratio it never trained on.
-
-### 4. `src/data/label_utils.py`
-**Purpose**: Maintains the definitive source of truth for our 5-class schema and handles categorical-to-numeric data transformations.
-**Dependencies**: `json`, `numpy`, `torch`, `sklearn.utils.class_weight`.
-
-**Key Variables**:
-- `TARGET_CLASSES`: An explicitly sorted list of the 5 valid target strings (`infrastructure_and_utility_damage`, `injured_or_dead_people`, `not_humanitarian`, `other_relevant_information`, `rescue_volunteering_or_donation_effort`).
-
-**Key Functions**:
-- `create_label_mapping()`: Generates `label2id` (string to int) and `id2label` dictionaries.
-- `compute_and_save_class_weights()`: Extracts the `np.unique` distribution of the training data and passes it to `compute_class_weight("balanced")`. This mathematically applies the formula: `n_samples / (n_classes * np.bincount(y))` to heavily penalize errors on minority classes (like `injured_or_dead_people`) during neural network backpropagation.
-
-### 5. `src/training/config.py`
-**Purpose**: A centralized configuration file to guarantee strict experimental consistency across all tested architectures.
-**Dependencies**: `torch`.
-
-**Key Hyperparameters**:
-- `SEEDS = [42, 123, 456]`: Controls initialization randomness. Running over multiple seeds ensures our performance reports are statistically stable and not flukes.
-- `learning_rate = 2e-5`: A conservative, universally standard learning rate for fine-tuning pre-trained transformer embeddings without causing "catastrophic forgetting".
-- `weight_decay = 0.01`: Regularization parameter mathematically pulling unneeded weights to 0, restricting overfitting.
-- `warmup_ratio = 0.06`: Slowly ramps up the learning rate for the first 6% of steps to prevent massive gradient shocks early in training.
-- `fp16 = torch.cuda.is_available()`: Drastically reduces training time and GPU memory usage by storing network weights in 16-bit floats instead of 32-bit.
-- `save_total_limit = 1` and `save_strategy = "epoch"`: Limits massive disk storage usage on Kaggle by immediately deleting old checkpoints when a new Best Model validates.
-
-### 6. `src/training/train_model.py`
-**Purpose**: Contains the PyTorch/HuggingFace execution cycle for training, evaluating, and extracting multi-seed predictions.
-**Dependencies**: `transformers.Trainer`, `torch.nn.CrossEntropyLoss`, `sklearn.metrics`.
-
-**Key Functions and Classes**:
-- `WeightedTrainer(Trainer)`: Inherits from the standard HuggingFace engine but manually overrides the standard objective.
-- `compute_loss()`: Injects the pre-computed `class_weights` tensor into PyTorch's `CrossEntropyLoss`. The weights mathematically scale the gradients outputted during backwards passes based on rarity. It also explicitly overrides the device and dtype (`logits.dtype`) of the weights to prevent precision crashing during `fp16` mixed-precision batches.
-- `compute_metrics()`: Explicitly commands the trainer to optimize based on **Macro F1** instead of raw accuracy.
-- `train_multi_seed()`: A loop that executes the entire end-to-end model fine-tuning process three consecutive times to gather arrays of validation/test predictions.
-
-### 7. `src/analysis/dynamic_ensemble.py`
-**Purpose**: To implement **Novelty 1 (Context-Conditioned Dynamic Ensembling)**.
-Instead of naively averaging the softmax outputs of RoBERTa, DeBERTa, and ELECTRA, this relies on a separate Machine Learning model (a meta-learner) to decide *which model to trust for this specific tweet style*.
-
-**Key Logic**:
-- `build_meta_features()`: Concatenates the structural features of the tweet (length, punctuation, disaster keyword matches) directly against the 15 output probabilities (3 models * 5 classes).
-- `train_meta_learner()`: Takes the concatenated matrix and trains an MLP (Multi-Layer Perceptron) or Logistic Regressor. **Crucially**, it is trained on the Validation set output predictions, not the Train set outputs, preventing extreme data leakage and overconfidence.
-
-### 8. `src/analysis/adaptive_confidence.py`
-**Purpose**: To implement **Novelty 2 (Class-Adaptive Confidence Thresholds)**.
-Models tend to be highly confident about majority classes but statistically timid about minority classes. A flat `> 90%` confidence acceptance threshold rejects too many valuable minority predictions.
-
-**Key Logic**:
-- `sweep_per_class_thresholds()`: Iteratively sweeps thresholds from $0.00$ to $1.00$ independently for *each specific target class*.
-- It seeks to maximize an objective function balancing `alpha * F1_c + (1-alpha) * coverage_c` on the validation data. Thus, `not_humanitarian` might be given an optimal threshold of $0.95$, while `injured_or_dead_people` might be accepted at $0.65$.
-
-### 9. `src/analysis/attribution_filter.py`
-**Purpose**: To implement **Novelty 3 (Decision-Influencing Explainability)**.
-If a model predicts `infrastructure_and_utility_damage` with 99% confidence, but Integrated Gradients reveals it only looked at the words `"the", "and", "is"`, the prediction is statistically spurious and dangerous.
-
-**Key Logic**:
-- `compute_attributions_for_batch()`: Binds Captum's `LayerIntegratedGradients` mathematical hook to the literal first embedding layer of the neural network. It approximates the integral of gradients from a zero-baseline up to the real input to measure pixel/word exact contribution percentages.
-- `compute_disaster_relevance_score()`: Separates the top $K$ influential tokens and flags if the majority are in `IRRELEVANT_TOKENS`.
-- `combined_abstention()`: Pairs Novelty 2 (Confidence) and Novelty 3 (Attribution) together. A tweet only flows through the system if it clears both safety gates.
-
-### 10. `src/analysis/context_features.py` & `src/analysis/disaster_vocab.py`
-**Purpose**: Dictionaries and feature engineering logic to convert English text into machine-readable boolean maps.
-- **`context_features.py`**: Searches for Regex matches, character properties (uppercase ratio), and specific markers like "SOS" to output numerical arrays for the Dynamic Ensemble meta-learner.
-- **`disaster_vocab.py`**: Stores explicitly vetted lexical arrays specific to each class (e.g., `"hospital", "rubble"` for infrastructure) and defines exact lists of non-informative pronouns/stopwords (`"the", "my"`).
-
-### 11. `src/evaluation/evaluation.py` (Evaluation Analysis)
-**Purpose**: Quantitatively proves the merit of the novelties and the deep models.
-**Key Functions**:
-- `mcnemar_test()`: Evaluates statistical significance between the Ensemble and the Base models by comparing their disagreement matrices. It proves whether the ensemble's superiority is mathematically genuine or just random noise.
-- `train_tfidf_svm_baseline()`: Creates a non-deep-learning baseline (TF-IDF keyword counting + Support Vector Machine) to prove that the heavy compute of transformers is actually justified.
-- **Calibration (ECE)**: Refers to Expected Calibration Error. If a model says it is 80% confident across 100 samples, it is "perfectly calibrated" if it gets exactly 80 of them correct. ECE measures the deviance from that perfect diagonal match.
-- **Confusion Matrices**: Heatmaps visualizing which specific classes confuse the model. E.g., if the model predicts `other_relevant` when the true label is `rescue_volunteering`.
-
-### 12. `src/app/crisis_dashboard.ipynb` & `src/app/gradio.ipynb`
-**Purpose**: The final stakeholder software artifact. Takes the entire mathematical backend and renders it via visual components.
-**Key Architecture**:
-- **Pre-classification**: Runs raw strings through the transformer models, evaluates the dynamic model weighting (Novelty 1), gauges confidence bounds (Novelty 2), requests explanation attributions (Novelty 3).
-- **Interface**: Uses Gradio interfaces/HTML structures to visually highlight tokens green/red based on IG attribution algorithms, and displays warnings if the Adaptive Confidence bounds flag the text as highly uncertain.
+## Table of Contents
+1. [Project Overview](#project-overview)
+2. [File-by-File Documentation](#file-by-file-documentation)
+3. [End-to-End Pipeline](#end-to-end-pipeline)
+4. [Key Concepts](#key-concepts)
+5. [Results Summary](#results-summary)
+6. [Design Decisions](#design-decisions)
+7. [Review Questions](#review-questions)
 
 ---
 
-## 2. End-to-End Pipeline Walkthrough
+## Project Overview
 
-1. **Ingestion**: The system downloads HumAID's pre-defined `train`, `val`, and `test.parquet` from the Kaggle dataset.
-2. **Standardization**: `prepare_data.py` executes Regex cleaning via `preprocessing.py` mapping everything to standardized lowercase texts while removing web artifacts.
-3. **Harmonization**: Conflicting duplicated rows are stripped using the deterministic frequency/majority tie-breaker system. Irrelevant classifications outside the 5-target scope are completely pruned.
-4. **Tokenization**: Datasets are injected into `AutoTokenizer` engines specific to three distinct transformer architectures (RoBERTa, DeBERTa, ELECTRA) creating vector IDs up to a length padding block of 128.
-5. **Backpropagation**: `train_model.py` iterates across 5 epochs using FP16 mixed precision, scaling the CrossEntropyLoss using inversely weighted values fetched from `label_utils.py` to protect minority classes. An `EarlyStoppingCallback` interrupts training to rollback the memory state to the epoch with the lowest validation loss.
-6. **Multi-seed Validation**: The cycle is completely destroyed and re-initialized 3 separate times (`seeds = [42, 123, 456]`). Test set logits and Softmax outputs are extracted into `predictions/` arrays.
-7. **Synthesis**: The `dynamic_ensemble.py` ingests the arrays. It uses `context_features` to categorize the tweet's linguistic context, dynamically calculating which base transformer's probability matrices to trust most.
-8. **Reliability Abstraction**: The winning prediction is evaluated against `adaptive_confidence.py`'s acceptable historical threshold for that specific concept, and verified by `attribution_filter.py` against `disaster_vocab.py`'s terminology rules.
+This project classifies disaster-related tweets into **5 humanitarian categories** using the **HumAID dataset**. It employs an ensemble of **8 models** (6 transformers + 2 non-transformer) combined through a **Context-Conditioned Dynamic Ensemble** with **class-adaptive confidence thresholds** and **attribution-based abstention**.
 
----
+### 5-Class Schema
 
-## 3. Key Concepts Explained Simply
+| ID | Class Name | Description |
+|----|-----------|-------------|
+| 0  | `infrastructure_and_utility_damage` | Damage to buildings, roads, bridges, utilities |
+| 1  | `injured_or_dead_people` | Casualties, injuries, missing persons |
+| 2  | `not_humanitarian` | Non-humanitarian content |
+| 3  | `other_relevant_information` | General disaster info, warnings, updates |
+| 4  | `rescue_volunteering_or_donation_effort` | Rescue ops, donations, volunteering |
 
-- **Transformer Architecture & Self-Attention**: Rather than reading text sequentially left-to-right, transformers view all words at the same time. "Self-Attention" evaluates how intensely every word mathematically relates to every other word simultaneously (e.g. noticing that the word "bank" relates to "water" instead of "money").
-- **Tokenization & Subword Encoding**: Words aren't given to models directly; they're sliced into frequently occurring syllable chunks ("subwords") and mapped to numerical IDs. This ensures the model can guess the meaning of misspelled or brand new vocabulary combinations.
-- **Fine-tuning vs Training From Scratch**: Creating RoBERTa from scratch costs millions of dollars to teach it the grammar of the English language. "Fine-tuning" just takes that genius brain and spends 10 minutes teaching it the specific vocabulary of Disaster Relief.
-- **Macro F1 vs Accuracy**: Imagine a dataset with 99 photos of cats and 1 photo of a dog. A broken model that blindly guesses "Cat" every single time gets 99% accuracy. Macro-F1 solves this by evaluating the accuracy of the dog separately from the cats, and taking the true average of the two distinct tasks.
-- **Class Imbalance & Inverse Frequency Weighting**: Minority samples are ignored during training because the network assumes they aren't worth the mathematical effort. We artificially multiply their error penalty during training logic, tricking the neural network into treating them as massive priorities.
-- **Ensemble Methods**: Like asking three distinct expert doctors to vote on a diagnosis. Because RoBERTa, DeBERTa, and ELECTRA were designed differently, they fail in different ways. Combining them mathematically cancels out their isolated weaknesses.
-- **Softmax Confidence**: Takes a neural network's raw, chaotic output numbers (logits) and crushes them into clean percentages that total exactly 1.0 (100%).
-- **Integrated Gradients & Feature Attribution**: Mathematical calculus running backwards through the network to determine strictly what percentage of the final output decision was biologically caused by the 4th input token vs the 5th input token.
-- **Precision, Recall, F1 Score**: 
-   - *Precision*: "When you guess Dog, how often are you right?" 
-   - *Recall*: "Out of all actual Dogs, how many did you find?"
-   - *F1*: The harmonic mathematical union of both metrics.
-- **Confusion Matrix**: A checkerboard graph proving exactly where a model is confused. E.g. finding exactly how many times it guessed "Hospital Destroyed" when the reality was "Hospital Needs Donations".
-- **Calibration & ECE**: Measuring self-awareness. If a Model claims it is 60% sure, it should mathematically be incorrect exactly 4 times out of 10. ECE (Expected Calibration Error) graphs the distance between the model's ego and reality.
+### Models
 
----
+| Model | Type | HuggingFace String | Key Characteristic |
+|-------|------|-------------------|-------------------|
+| RoBERTa | Transformer | `roberta-base` | Dynamic masking, robust pre-training |
+| DeBERTa | Transformer | `microsoft/deberta-base` | Disentangled attention mechanism |
+| ELECTRA | Transformer | `google/electra-base-discriminator` | Replaced token detection |
+| BERT | Transformer | `bert-base-uncased` | Original bidirectional transformer |
+| XLNet | Transformer | `xlnet-base-cased` | Autoregressive, left padding required |
+| XtremeDistil | Transformer | `microsoft/xtremedistil-l6-h256-uncased` | 6-layer distilled, efficient |
+| TextCNN | Non-transformer | N/A | Conv filters [2,3,4] × 128, random embeddings |
+| BiLSTM | Non-transformer | N/A | 256 hidden, dot-product attention, GloVe 100d |
 
-## 4. Results Summary
+### Three Novelties
 
-*(Note: These are representative target boundaries demonstrating successful convergence for the 5-class HumAID target environment.)*
-
-- **Baseline TF-IDF/SVM**: ~0.76 Macro F1
-- **Individual Base Transformers (RoBERTa/DeBERTa/ELECTRA)**: Generates ~0.84 - 0.88 Macro F1 independently.
-- **Dynamic Context-Conditioned Ensemble**: ~0.89 - 0.90 Macro F1. Demonstrating highly significant `p < 0.05` statistical improvement over relying strictly on single architectures.
-- **Class Adaptive Validation**: Yields an immense structural jump in Precision scaling, increasing valid subset classification into the high `~0.93-0.95` F1 bounds at the intentional sacrifice of ~10% prediction Coverage (Selective Abstaining).
+1. **Context-Conditioned Dynamic Ensemble** — Meta-learner produces per-tweet weights conditioned on model outputs, linguistic features, tweet style, and confidence gaps
+2. **Class-Adaptive Confidence Thresholds** — Per-class abstention thresholds swept on validation data
+3. **Decision-Influencing Explainability** — Integrated Gradients flag unreliable predictions despite high softmax confidence
 
 ---
 
-## 5. Design Decisions
+## File-by-File Documentation
 
-- **Why HumAID instead of CrisisMMD?** HumAID's dataset guarantees isolated task categories specifically tailored for actionable logistics deployment. 
-- **Why filter to exactly 5 classes?** We intentionally restrict the model strictly to categories indicating life/logistical threats or direct resources.
-- **Why these specific transformer models?** 
-  - *RoBERTa*: Hyper-optimized BERT architecture providing incredibly solid generic embeddings.
-  - *DeBERTa*: Mathematically untangles absolute word position vs relative word position, producing radically different text understandings.
-  - *ELECTRA*: A discriminator model trained on spotting "fake" words, giving it an inherently different approach to grammar.
-- **Why Weighted Loss over Oversampling?** Oversampling duplicates records artificially, slowing down training and heavily contributing to network hard-memorization (overfitting). Weighted Loss strictly alters the calculus math instead.
-- **Why Dynamic Ensemble instead of Simple Average?** Averaging blindly lets a terribly confused model drag down an extremely correct model. The meta-learner views the tweet's grammar to objectively detect which of the three models handles that specific style of text better.
-- **Why `max_length=128`?** Social media tweets rarely exceed traditional token barriers. Expanding it to 256 squares the required GPU matrix memory (attention is $O(N^2)$) causing hardware crashing for zero data benefit.
-- **Why Early Stopping Patience = 2?** PyTorch automatically breaks the exact training loop if the Validation Loss fails to decrease for two straight epochs, avoiding pointless computational burn and protecting the system from overfitting to the Train Set exactly as it memorizes.
+### `src/data/preprocessing.py`
+- **Purpose:** Text cleaning functions for tweets
+- **Functions:**
+  - `clean_text(text)` — removes URLs, mentions, hashtag symbols, normalises whitespace
+  - `is_low_information(text, min_tokens=3)` — flags tweets with fewer than `min_tokens` words
+- **Dependencies:** `re`
 
+### `src/data/split.py`
+- **Purpose:** Load raw HumAID data and preprocess splits
+- **Functions:**
+  - `load_local_humaid()` — loads train/val/test parquets, renames `class_label` → `label`
+  - `preprocess_split(split_dataset)` — cleans text, flags low-info, removes empty
+  - `save_processed_splits(dataset)` — saves to `data/processed/`
+- **Dependencies:** `datasets`, `preprocessing`
+
+### `src/data/label_utils.py`
+- **Purpose:** Label mapping and class weight computation
+- **Key variables:** `TARGET_CLASSES` — 5 sorted class names
+- **Functions:**
+  - `filter_to_target_classes(dataset_split)` — drops non-target labels
+  - `create_label_mapping()` — returns `label2id`, `id2label`
+  - `encode_labels(split_dataset, label2id)` — maps string labels to integers
+  - `compute_and_save_class_weights(labels, num_classes)` — balanced class weights
+- **Dependencies:** `sklearn.utils.class_weight`, `torch`
+
+### `src/data/prepare_data.py`
+- **Purpose:** End-to-end data preparation script
+- **Pipeline:** Load → clean → deduplicate → filter to 5 classes → encode → compute weights → save
+- **Dependencies:** `split`, `label_utils`
 
 ---
 
-## 6. Likely Review Questions & Answers
+### `src/training/config.py`
+- **Purpose:** Centralised training configuration
+- **Key variables:**
+  - `NUM_LABELS = 5`
+  - `SEED = 42` — single seed for all training
+  - `TRAINING_ARGS` — shared hyperparameters (5 epochs, LR 2e-5, batch 16, etc.)
+  - `MODEL_CONFIGS` — 6 transformer model entries with `model_name` and `max_length`
+  - Data paths: `TRAIN_FILE`, `VAL_FILE`, `TEST_FILE`, `LABEL_MAPPING_FILE`
 
-1. **Why didn't you construct your neural network architectures absolutely from scratch?**
-   Creating models capable of basic English grammar inference from ground zero requires terabytes of data and weeks of distributed GPU clustering. Pre-trained HuggingFace models give us PhD-level grammar on top of which we "fine-tune" specific disaster recognition logic efficiently.
-2. **Explain the mechanical benefit of Integrated Gradients (Novelty 3).**
-   Confidence is purely statistical and easily tricked by patterns. IG allows us to force the network to mathematically "show its text selection logic." If a system gives a 99% confident prediction but IG shows it was solely weighting the comma punctuation mark, we safely command the pipeline to ignore the guess entirely.
-3. **What is catastrophic forgetting and how does `learning_rate=2e-5` help?**
-   If you update a pre-trained network with huge mathematical steps, it overwrites its entire core understanding of generic English. A tiny, conservative scalar (`2e-5`) limits the alterations to surface-level task-mapping without destroying what it originally learned.
-4. **Why did you use Parquet serialization files instead of standard CSV?**
-   Parquet uses intense column-based binary compression natively integrated into Apache Arrow. It allows massive HuggingFace datasets to stream into RAM optimally while retaining exact datatype metadata without the overhead of CSV text parsing matrices.
-5. **How did the system handle identical tweets with conflicting categorizations?**
-   In `prepare_data.py`, we implemented explicit majority-voting. The system tallied how many times the exact `tweet_text` string was assigned to label X vs label Y. The highest frequency safely overrides outliers, generating an undisputed clean training mapping.
-6. **What is `fp16` and why was it selectively disabled for DeBERTa v3?**
-   `fp16` drops 32-bit float memory to 16-bits to double GPU capacities. However, early builds of DeBERTa use mathematically massive scale gradients internally that specifically overflow 16-bit float limits during calculations, causing `NaN` gradients. (We ultimately resolved this safely by shifting directly back to DeBERTa v1 which natively handles `fp16` natively).
-7. **Can your dynamic ensemble concept theoretically scale to 10 models?**
-   Yes, the generic array concatenations generated by `context_features` simply expand along the column axis. The `MLPClassifier` meta-learner easily maps higher dimensional input shapes assuming sufficient validation data exists to train the deeper weights.
-8. **Why is Marco-F1 the central optimization criteria instead of regular accuracy?**
-   Accuracy aggressively rewards networks that simply guess the easiest, most frequent class constantly. Macro calculations force the evaluation formulas to un-weight volume discrepancies and calculate categorical truth evenly.
-9. **Explain the mathematical intent behind McNemar's Test in your pipeline.**
-   When Model A beats Model B by 1% Accuracy, we do not know if Model A was simply "lucky" on the exact distribution of the test set splits. McNemar cross-evaluates specifically the distinct items Model A got right but Model B got wrong, mathematically determining if the advantage is genuinely systemic (p < 0.05).
-10. **What does the `save_total_limit = 1` logic achieve in HuggingFace configuration structs?**
-    HuggingFace inherently persists gigantic 1-2GB copies of model states to the filesystem sequentially for safety. Left unbounded, training three massive Transformers concurrently instantly triggers system storage collapse, wiping Out-of-Memory. Locking the limit simply flushes older copies routinely.
-11. **Why are special character artifacts like `@` and URLs completely purged?**
-    They generate infinite unique combinations mathematically fracturing the token vocabulary (e.g. `@RescueHelp2022`). Without standard semantic meaning, standard Tokenizers cannot associate them mathematically.
-12. **Describe how "Adaptive Thresholding" explicitly enhances trust in humanitarian contexts.**
-    A first responder does not care about deploying units to a 60% probability. Sweeping validation matrices establishes extremely tight boundaries enforcing models to hold much stricter numerical confidence minimums to output specific critical actions (resulting in massive Precision gains).
-13. **Why extract uppercase letter ratio statistics specifically?**
-    Contextual tone directly infers emergency presence. Frantic requests ("HELP WE ARE TRAPPED HERE") contain dramatically elevated uppercase character percentages vs automated generic news feed bots.
-14. **How did `compute_class_weight(balanced)` exactly interact with the generic `CrossEntropyLoss`?**
-    The calculated class values simply modify the literal magnitude limits of the backwards chain-rule derivatives locally inside PyTorch execution context bounds. Mistakes against majorities return tiny parameter adjustments. Mistakes against extremely vital minorities return huge adjustments triggering larger learning parameter shifts.
-15. **What exactly is the "Meta-Learner" inside your architecture?**
-    It is structurally a tiny Machine Learning `sklearn` secondary brain (Multi Layer Perceptron Neural Network). It learns to watch the outputs of the primary deep learning network architectures along with pure grammatical structure to guess which one of them happens to be correct natively.
-16. **Why restrict `min_tokens=3` dynamically inside the cleaning algorithm pipelines?**
-    Sentences composed of 1 or 2 isolated semantic tokens literally lack semantic meaning sufficient for classification logic contexts. They inherently represent system noise exclusively.
-17. **What separates your dynamic ensembling code mathematically from traditional hard-voting paradigms?**
-    Hard-voting mandates "Model A, B & C all guess class 2." Dynamic ensembling operates mathematically by calculating "Model A is highly associated with accurate outputs whenever tweets contain multiple exclamation points. For this specific string, completely trust Model A." 
-18. **Why calculate test splits identically via `set_seed` logic sequentially?**
-    Because Deep Learning relies heavily on Pseudo-Random weight initializations internally and mini-batch sample pulls, repeating operations generates slight standard deviations inherently. Averaging outputs locally restricts chaotic outliers. 
-19. **How would you interpret a massive structural discrepancy existing between Macro F1 and basic Accuracy during validation?**
-    It natively proves the model algorithm has mathematically converged onto exclusively identifying high-visibility classes and exhibits catastrophic collapse when encountering required minority scenarios locally.
-20. **Why are stopwords manually evaluated natively inside `disaster_vocab.py` via `IRRELEVANT_TOKENS` logic frameworks?**
-    Because Neural Networks can accidentally construct shortcuts internally learning that specific filler words magically correlate with specific labels based entirely on flawed data imbalances. Natively blocking these exact stopwords guarantees legitimate disaster vocabulary triggers the outputs locally.
+### `src/training/train_model.py`
+- **Purpose:** Unified training script for all 6 transformer models
+- **Classes:**
+  - `WeightedTrainer(Trainer)` — overrides `compute_loss` with class-weighted cross-entropy
+  - `TrainingLossCallback(TrainerCallback)` — captures per-epoch train loss, val loss, val Macro F1; saves `training_history.json`
+- **Functions:**
+  - `compute_metrics(eval_pred)` — returns Macro F1 and accuracy
+  - `load_data()` / `load_label_mapping()` — load parquets and label mappings
+  - `tokenize_dataset(dataset, tokenizer, max_length, model_key)` — tokenises with XLNet-specific left padding and token_type_ids removal
+  - `load_best_hyperparams(model_key)` — loads Optuna-tuned params if `best_hyperparams_{model_key}.json` exists
+  - `train_single_model(model_key, seed, output_dir, ...)` — trains one model, saves predictions as `val_predictions.npz` / `test_predictions.npz`
+
+**XLNet Special Handling:**
+- `tokenizer.padding_side = "left"` set before tokenisation
+- `token_type_ids` removed from tokenised output (XLNet handles them differently)
+
+**Training History Format** (`training_history.json`):
+```json
+{
+  "epoch": [1, 2, 3, 4, 5],
+  "train_loss": [0.85, 0.62, 0.51, 0.44, 0.40],
+  "val_loss": [0.71, 0.58, 0.53, 0.50, 0.49],
+  "val_macro_f1": [0.72, 0.78, 0.81, 0.83, 0.84]
+}
+```
+
+### `src/training/hyperparameter_tuning.py`
+- **Purpose:** Optuna-based Bayesian hyperparameter optimisation per model
+- **Search space per model:**
+  - `learning_rate`: log-uniform in [1e-5, 5e-5]
+  - `warmup_ratio`: uniform in [0.0, 0.2]
+  - `weight_decay`: uniform in [0.0, 0.1]
+  - `per_device_train_batch_size`: categorical {8, 16, 32}
+- **Design:**
+  - 20 trials per model using TPE sampler
+  - Each trial trains on 30% of training data for 3 epochs
+  - Optimises validation Macro F1
+  - Saves best params to `data/processed/best_hyperparams_{model_key}.json`
+  - Trial checkpoints are cleaned up after each trial to save disk space
+- **Functions:**
+  - `create_objective(model_key, ...)` — creates the Optuna objective function
+  - `run_hyperparameter_tuning(model_key, output_dir, n_trials)` — callable from notebooks
+  - `run_all_hyperparameter_tuning(output_dir)` — tunes all models sequentially
+
+---
+
+### `src/analysis/disaster_vocab.py`
+- **Purpose:** Curated per-class disaster vocabulary for attribution verification
+- **Key variables:**
+  - `DISASTER_VOCAB` — dict of class_name → set of relevant tokens
+  - `IRRELEVANT_TOKENS` — stopwords, punctuation, social media artifacts, special tokens
+- **Functions:**
+  - `get_disaster_vocab_for_class(class_name)` — returns vocab set for a class
+  - `is_disaster_relevant(token, class_name)` — checks if token is relevant
+  - `is_irrelevant(token)` — checks if token is a stopword
+
+### `src/analysis/context_features.py`
+- **Purpose:** Per-tweet linguistic feature extraction for the meta-learner
+- **Features extracted:** char_count, word_count, avg_word_length, exclamation_count, question_count, uppercase_ratio, has_numbers, disaster_keyword_count/ratio, urgency_keyword_count
+- **Functions:**
+  - `extract_features(tweet_text)` — returns dict of features for one tweet
+  - `extract_features_batch(tweet_texts)` — returns numpy matrix (N, num_features)
+
+### `src/analysis/model_characterisation.py`
+- **Purpose:** Explainability-driven model characterisation with 4 tweet styles
+- **Tweet Style Categories:**
+
+| Style | Signals | Example |
+|-------|---------|---------|
+| URGENT | All-caps, exclamation marks, SOS/HELP/TRAPPED | "HELP! Building collapsed!" |
+| FORMAL | Organisation names, percentages, third-person reporting | "FEMA reports 30% of infrastructure damaged" |
+| EYEWITNESS | First-person pronouns, present tense, "I see", "near me" | "I can see flooding from my window right now" |
+| INFORMATIONAL | Past tense, statistics, factual reporting | "Hurricane was downgraded to Category 2" |
+
+- **Functions:**
+  - `classify_tweet_style(text)` — returns best style + scores
+  - `classify_tweets_batch(texts)` — batch classification
+  - `style_to_onehot(style_labels)` — converts to one-hot (N, 4)
+  - `compute_style_performance_matrix(...)` — Macro F1 per model per style → 6×4 matrix
+  - `plot_style_performance_heatmap(...)` — saves heatmap PNG
+  - `compute_attribution_profiles(...)` — average IG attribution per style-vocabulary category
+  - `run_attribution_style_verification(...)` — runs attribution profiles for all models
+  - `plot_attribution_profiles(...)` — saves grouped bar chart
+
+### `src/analysis/dynamic_ensemble.py`
+- **Purpose:** Context-Conditioned Dynamic Ensemble (Novelty 1)
+- **Meta-features (per sample):**
+  - Model softmax probabilities: 8 models × 5 classes = 40 features
+  - Context features: 10 linguistic features
+  - Confidence gaps: max_prob − second_max_prob per model = 8 features
+  - Tweet style one-hot: 4 features
+  - **Total: ~62 features**
+- **Meta-learner:** MLP with hidden layers (128, 64), trained on validation set
+- **Functions:**
+  - `compute_confidence_gaps(model_probs_list)` — returns (N, M) gap matrix
+  - `build_meta_features(model_probs_list, tweet_texts, style_labels)` — concatenates all feature groups
+  - `train_meta_learner(...)` — trains and returns sklearn model + scaler
+  - `predict_with_dynamic_ensemble(...)` — returns ensemble probs and preds
+  - `evaluate_dynamic_ensemble(...)` — prints Macro F1 and classification report
+  - `save_ensemble_artifacts(...)` — saves meta-learner, scaler, predictions
+
+### `src/analysis/adaptive_confidence.py`
+- **Purpose:** Class-Adaptive Confidence Thresholds (Novelty 2)
+- **Method:** For each class, sweep threshold from 0 to 1 on validation set; choose threshold maximising α·F1 + (1−α)·coverage
+- **Functions:**
+  - `sweep_per_class_thresholds(probs, preds, labels, ...)` — returns per-class thresholds
+  - `apply_per_class_thresholds(probs, preds, ...)` — returns accepted mask
+  - `evaluate_selective_prediction(...)` — reports coverage, F1, accuracy
+
+### `src/analysis/attribution_filter.py`
+- **Purpose:** Decision-Influencing Explainability via Attribution Filtering (Novelty 3)
+- **Supports:** RoBERTa, DeBERTa, ELECTRA, BERT, XLNet, XtremeDistil (embedding layer auto-detection)
+- **Functions:**
+  - `compute_attributions_for_batch(...)` — LayerIntegratedGradients on embedding layer
+  - `compute_disaster_relevance_score(...)` — fraction of top-K tokens that are disaster-relevant
+  - `flag_unreliable_predictions(...)` — flags high-confidence but irrelevant-attribution predictions
+  - `combined_abstention(...)` — combines confidence + attribution signals
+
+### `src/analysis/cnn_classifier.py`
+- **Purpose:** TextCNN ensemble member
+- **Architecture:** Embedding(vocab, 128) → Conv1d[2,3,4]×128 → MaxPool → Dropout(0.5) → Linear(384, 5)
+- **Training:** Adam, ReduceLROnPlateau, 10 epochs, class-weighted CE, seed=42
+- **Functions:**
+  - `train_cnn(...)` — trains and saves predictions
+  - `predict_cnn(model, vocab, texts)` — inference
+
+### `src/analysis/bilstm_classifier.py`
+- **Purpose:** BiLSTM with attention ensemble member
+- **Architecture:** GloVe 100d → BiLSTM(256) → Dot-Product Attention → Linear(512, 5)
+- **GloVe loading:** Auto-downloads `glove.6B.zip` from Stanford NLP, caches in `~/.cache/glove/`
+- **Training:** Adam, gradient clipping (max_norm=1.0), 15 epochs, class-weighted CE, seed=42
+- **Functions:**
+  - `train_bilstm(...)` — trains and saves predictions
+  - `predict_bilstm(model, vocab, texts)` — inference
+
+---
+
+### `src/evaluation/evaluation.py`
+- **Purpose:** Comprehensive evaluation across all 8 models + ensemble
+- **Produces:**
+  - Per-model confusion matrices (normalised)
+  - Per-class F1 comparison bar chart (all 8 models + ensemble)
+  - Macro F1 summary (baselines + all models + ensemble)
+  - Training curves (train loss, val loss, val Macro F1 per epoch)
+  - Calibration diagram (reliability plot)
+  - Confidence distribution histograms
+  - Model × style performance heatmap
+  - Consolidated results table
+  - McNemar's test for pairwise statistical significance
+  - TF-IDF + SVM and majority class baselines
+
+### `src/app/crisis_dashboard.py`
+- **Purpose:** Gradio-based crisis dashboard for real-time tweet classification
+- **Features:**
+  - Loads all 8 models (6 transformers + CNN + BiLSTM)
+  - Runs dynamic ensemble with style features
+  - Displays: predicted category, confidence, tweet style, per-model predictions
+  - Example tweets for each style category
+- **Functions:**
+  - `load_all_models(model_dir, device)` — loads all available models
+  - `classify_tweet(text, models, tokenizers, meta_learner, scaler, class_names, device)` — full pipeline
+  - `create_dashboard(model_dir, ...)` — creates and returns Gradio Blocks app
+
+---
+
+## End-to-End Pipeline
+
+```
+1. DATA PREPARATION (src/data/prepare_data.py)
+   Raw HumAID Parquets → Clean text → Deduplicate → Filter to 5 classes
+   → Encode labels → Compute class weights → Save processed parquets
+
+2. HYPERPARAMETER TUNING (src/training/hyperparameter_tuning.py) [Optional]
+   For each model: 20 Optuna trials on 30% data × 3 epochs
+   → Save best_hyperparams_{model_key}.json
+
+3. TRANSFORMER TRAINING (src/training/train_model.py)
+   For each of 6 transformers (seed=42):
+     Load data → Tokenize (XLNet: left pad, no token_type_ids)
+     → Train with WeightedTrainer + TrainingLossCallback
+     → Save val_predictions.npz, test_predictions.npz, training_history.json, best_model/
+
+4. NON-TRANSFORMER TRAINING
+   CNN: src/analysis/cnn_classifier.py (random embeddings, Conv1d filters)
+   BiLSTM: src/analysis/bilstm_classifier.py (GloVe 100d, dot-product attention)
+   → Save val_predictions.npz, test_predictions.npz
+
+5. MODEL CHARACTERISATION (src/analysis/model_characterisation.py)
+   Classify tweet styles → Compute per-model per-style F1 matrix
+   → Attribution-based style verification
+
+6. DYNAMIC ENSEMBLE (src/analysis/dynamic_ensemble.py)
+   Build meta-features: 8×5 probs + context + confidence gaps + style one-hot
+   → Train MLP meta-learner on validation set → Predict on test set
+
+7. SELECTIVE PREDICTION
+   Novelty 2: sweep per-class thresholds on validation
+   Novelty 3: flag unreliable predictions via attribution analysis
+   Combined: accept only if BOTH signals agree
+
+8. EVALUATION (src/evaluation/evaluation.py)
+   All plots, tables, statistical tests, training curves
+
+9. DASHBOARD (src/app/crisis_dashboard.py)
+   Gradio app for real-time classification with all 8 models
+```
+
+---
+
+## Key Concepts
+
+### Why 8 Models?
+- **RoBERTa** — Strong general-purpose performance, dynamic masking improves robustness
+- **DeBERTa** — Disentangled attention captures fine-grained position-dependent semantics
+- **ELECTRA** — Replaced token detection is sample-efficient, good for noisy social media
+- **BERT** — Baseline bidirectional transformer, established benchmark
+- **XLNet** — Autoregressive pre-training captures longer-range dependencies
+- **XtremeDistil** — 6-layer distilled model tests whether smaller models suffice
+- **TextCNN** — Fast, strong at local n-gram patterns, complements transformer global attention
+- **BiLSTM** — Captures sequential dependencies differently from transformers; GloVe embeddings provide pre-trained word semantics without fine-tuning
+
+### Why Tweet Style Classification?
+Different models may excel at different tweet styles. The style classification provides:
+1. **Interpretable routing** — the meta-learner can learn to trust different models for different styles
+2. **Evidence for model selection** — the style performance heatmap shows which model handles which style best
+3. **Explainability** — attribution profiles verify that models attend to style-appropriate vocabulary
+
+### Why Confidence Gap Features?
+The gap between the highest and second-highest softmax probability indicates how "decisive" a model is. A large gap suggests the model is confident and discriminating; a small gap suggests uncertainty. Feeding this per-model to the meta-learner allows it to weight decisive models more heavily.
+
+### Class-Weighted Training
+Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates). Class weights computed via sklearn's `balanced` strategy ensure minority classes (e.g., `injured_or_dead_people`) receive higher loss weight during training.
+
+---
+
+## Results Summary
+
+> **Note:** Results below are placeholders. Run the full pipeline on Kaggle to fill in actual values.
+
+### Individual Model Performance (Test Set)
+
+| Model | Macro F1 | Accuracy |
+|-------|----------|----------|
+| RoBERTa | — | — |
+| DeBERTa | — | — |
+| ELECTRA | — | — |
+| BERT | — | — |
+| XLNet | — | — |
+| XtremeDistil | — | — |
+| CNN | — | — |
+| BiLSTM | — | — |
+| **Dynamic Ensemble** | **—** | **—** |
+
+### Selective Prediction Results
+
+| Metric | Without Selection | With Novelty 2 | With Novelty 2+3 |
+|--------|------------------|----------------|------------------|
+| Coverage | 100% | — | — |
+| Macro F1 | — | — | — |
+| Accuracy | — | — | — |
+
+---
+
+## Design Decisions
+
+### Why These 6 Transformer Models?
+1. **RoBERTa/DeBERTa/ELECTRA** — three different pre-training objectives provide complementary representations
+2. **BERT** — canonical baseline expected by reviewers
+3. **XLNet** — explores autoregressive pre-training which handles word order differently
+4. **XtremeDistil** — tests if a 6-layer distilled model can achieve competitive performance with much lower compute
+
+### Why Single Seed Instead of Multi-Seed?
+The panel requested removing multi-seed variance reporting. With 8 models, the computational cost of 3 seeds × 8 models = 24 training runs is prohibitive. Single seed (42) is standard in the literature and sufficient for comparing model architectures.
+
+### Why Optuna for Hyperparameter Tuning?
+- **Bayesian optimisation** (TPE) is more sample-efficient than grid/random search
+- **30% data + 3 epochs** keeps trial time manageable (~5-10 min per trial on T4)
+- **20 trials** balances exploration vs. compute budget
+- Per-model tuning allows each architecture to find its optimal configuration
+
+### Why TextCNN and BiLSTM?
+- Non-transformer baselines provide diversity in the ensemble
+- CNN captures local n-gram patterns; BiLSTM captures sequential semantics
+- If transformers overfit to similar patterns, non-transformers provide an alternative signal
+- Demonstrates the ensemble can integrate heterogeneous model families
+
+### Why Tweet Style Features in the Ensemble?
+- The style classification provides human-interpretable routing signals
+- The meta-learner can learn patterns like "trust ELECTRA more for URGENT tweets"
+- This creates a direct link between explainability analysis and ensemble decision-making
+
+---
+
+## Review Questions
+
+### Data & Preprocessing
+1. **Why 5 classes instead of 10?** — Reduces class ambiguity, improves per-class sample sizes, and focuses on the most actionable humanitarian categories.
+2. **How are duplicates handled?** — Majority vote for conflicting labels, then deduplicate.
+3. **What text cleaning is applied?** — URL removal, mention removal, hashtag symbol removal, whitespace normalisation.
+
+### Models & Training
+4. **Why use class-weighted loss?** — Disaster datasets are imbalanced; `not_humanitarian` dominates. Balanced weights ensure minority classes receive proportional attention.
+5. **How does XLNet differ from other transformers?** — Uses left padding (all others use right padding) and does not use token_type_ids in the standard way.
+6. **What is XtremeDistil and why include it?** — A 6-layer distilled BERT variant from Microsoft. Tests whether model compression degrades performance on this task.
+7. **How does hyperparameter tuning work?** — Optuna samples from defined ranges using Bayesian optimisation (TPE), trains on 30% data for 3 epochs, and selects the configuration maximising validation Macro F1.
+8. **Why use training_history.json?** — Records per-epoch loss curves for visualisation, helping detect overfitting and compare convergence patterns across models.
+
+### Ensemble & Novelties
+9. **What features does the meta-learner use?** — 40 softmax probabilities (8×5), 10 linguistic features, 8 confidence gaps, 4 style one-hot features = ~62 total.
+10. **Why train the meta-learner on validation data, not training data?** — Prevents the meta-learner from memorising training set patterns; forces it to learn genuine cross-model complementarity.
+11. **What is the confidence gap feature?** — max_prob − second_max_prob per model. A large gap indicates a decisive model; a small gap indicates uncertainty.
+12. **How do per-class thresholds differ from a global threshold?** — Different classes have different difficulty levels. A global threshold would over-abstain on easy classes and under-abstain on hard ones.
+13. **What does the attribution filter catch?** — High-confidence predictions where the most-attributed tokens are stopwords/irrelevant, suggesting the model is confident for the wrong reasons.
+
+### Explainability & Characterisation
+14. **What are the 4 tweet styles?** — URGENT (SOS, all-caps), FORMAL (organisations, statistics), EYEWITNESS (first person, present tense), INFORMATIONAL (factual, past tense).
+15. **How does tweet style classification work?** — Rule-based scoring using regex patterns and keyword sets. Each tweet gets 4 scores; the highest determines the style.
+16. **What does the style performance heatmap show?** — A 6×4 matrix of Macro F1 per transformer per tweet style, revealing which models excel at which styles.
+17. **What are attribution profiles?** — Average Integrated Gradients attribution scores grouped by vocabulary category (urgent/formal/eyewitness/stopword) per model per style.
+
+### CNN & BiLSTM
+18. **Why random embeddings for CNN instead of pre-trained?** — Keeps the CNN lightweight and tests whether simple n-gram patterns suffice without pre-trained semantics.
+19. **Why GloVe for BiLSTM?** — GloVe provides static word semantics that complement the BiLSTM's sequential modelling, without requiring fine-tuning a large model.
+20. **How do CNN/BiLSTM predictions integrate with the ensemble?** — Saved in identical `.npz` format; their softmax probabilities feed into the meta-learner alongside transformer outputs.
+
+### Evaluation
+21. **What baselines are compared?** — Majority class and TF-IDF + LinearSVC.
+22. **How is statistical significance tested?** — McNemar's test with continuity correction, comparing pairwise models and ensemble vs. best individual.
+23. **What plots are generated?** — Confusion matrices, per-class F1 bars, Macro F1 summary, training curves, calibration diagrams, confidence distributions, style performance heatmap.

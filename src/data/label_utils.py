@@ -4,7 +4,7 @@ import torch
 from sklearn.utils.class_weight import compute_class_weight
 
 
-# ── 5-Class Schema (CrisisMMD) ──────────────────────────────────────────────
+# ── 5-Class Schema (HumAID) ──────────────────────────────────────────────
 # Records with labels NOT in this list are dropped during data preparation.
 
 TARGET_CLASSES = sorted([

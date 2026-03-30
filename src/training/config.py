@@ -1,13 +1,13 @@
 # ── Training Configuration ────────────────────────────────────────────────────
-# Shared hyperparameters for all three models (RoBERTa, DeBERTa, ELECTRA)
+# Shared hyperparameters for all transformer models.
 # This ensures consistent comparisons across models.
 
 import torch
 
 NUM_LABELS = 5
 
-# Seeds for multi-run variance reporting
-SEEDS = [42, 123, 456]
+# Single seed for reproducibility
+SEED = 42
 
 # Unified training arguments (shared by all models)
 TRAINING_ARGS = {
@@ -28,7 +28,7 @@ TRAINING_ARGS = {
     "report_to": "none",
 }
 
-# Per-model configuration
+# Per-model configuration (6 transformer models)
 MODEL_CONFIGS = {
     "roberta": {
         "model_name": "roberta-base",
@@ -40,6 +40,18 @@ MODEL_CONFIGS = {
     },
     "electra": {
         "model_name": "google/electra-base-discriminator",
+        "max_length": 128,
+    },
+    "bert": {
+        "model_name": "bert-base-uncased",
+        "max_length": 128,
+    },
+    "xlnet": {
+        "model_name": "xlnet-base-cased",
+        "max_length": 128,
+    },
+    "xtremedistil": {
+        "model_name": "microsoft/xtremedistil-l6-h256-uncased",
         "max_length": 128,
     },
 }
