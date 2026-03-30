@@ -21,7 +21,7 @@ using the HumAID dataset filtered to 5 classes.
 - **DeBERTa-base** — Disentangled attention with enhanced decoding
 - **ELECTRA-base** — Replaced token detection pre-training
 - **BERT-base-uncased** — Original bidirectional transformer
-- **XLNet-base-cased** — Autoregressive pre-training (left padding)
+- **BERTweet** — RoBERTa pre-trained on 850M English tweets (domain-specific)
 - **XtremeDistil-L6-H256** — Distilled BERT for efficiency
 
 ### 2 Non-Transformer Models

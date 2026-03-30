@@ -46,8 +46,8 @@ MODEL_CONFIGS = {
         "model_name": "bert-base-uncased",
         "max_length": 128,
     },
-    "xlnet": {
-        "model_name": "xlnet-base-cased",
+    "bertweet": {
+        "model_name": "vinai/bertweet-base",
         "max_length": 128,
     },
     "xtremedistil": {

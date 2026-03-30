@@ -19,7 +19,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 # ── Model Loading ────────────────────────────────────────────────────────────
 
-TRANSFORMER_KEYS = ["roberta", "deberta", "electra", "bert", "xlnet", "xtremedistil"]
+TRANSFORMER_KEYS = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]
 ALL_MODEL_KEYS = TRANSFORMER_KEYS + ["cnn", "bilstm"]
 
 DISPLAY_NAMES = {
@@ -27,7 +27,7 @@ DISPLAY_NAMES = {
     "deberta": "DeBERTa",
     "electra": "ELECTRA",
     "bert": "BERT",
-    "xlnet": "XLNet",
+    "bertweet": "BERTweet",
     "xtremedistil": "XtremeDistil",
     "cnn": "CNN",
     "bilstm": "BiLSTM",
@@ -45,10 +45,6 @@ def load_transformer_model(model_dir, model_key, device="cpu"):
     model = AutoModelForSequenceClassification.from_pretrained(model_path)
     model.to(device)
     model.eval()
-
-    # XLNet uses left padding
-    if model_key == "xlnet":
-        tokenizer.padding_side = "left"
 
     return model, tokenizer
 
@@ -118,10 +114,6 @@ def predict_single_tweet(text, models, tokenizers, device="cpu"):
                 text, return_tensors="pt", truncation=True,
                 padding="max_length", max_length=128,
             )
-            # Remove token_type_ids for XLNet
-            if key == "xlnet" and "token_type_ids" in inputs:
-                del inputs["token_type_ids"]
-
             inputs = {k: v.to(device) for k, v in inputs.items()}
             with torch.no_grad():
                 logits = model(**inputs).logits

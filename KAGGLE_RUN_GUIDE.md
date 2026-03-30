@@ -104,7 +104,7 @@ from hyperparameter_tuning import run_hyperparameter_tuning
 from train_model import train_single_model
 
 # Train each model — uses tuned hyperparams if available
-for model_key in ["roberta", "deberta", "electra", "bert", "xlnet", "xtremedistil"]:
+for model_key in ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]:
     result = train_single_model(model_key, seed=42, output_dir=OUTPUT_DIR)
     print(f"✅ {model_key} done — Test F1: {result['test_metrics']['eval_macro_f1']:.4f}")
 ```
@@ -162,7 +162,7 @@ def load_predictions(model_key, split="test"):
     return {"preds": data["preds"], "labels": data["labels"], "probs": data["probs"]}
 
 # Load predictions from all 8 models
-model_keys = ["roberta", "deberta", "electra", "bert", "xlnet", "xtremedistil", "cnn", "bilstm"]
+model_keys = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil", "cnn", "bilstm"]
 val_preds = {k: load_predictions(k, "val") for k in model_keys}
 test_preds = {k: load_predictions(k, "test") for k in model_keys}
 
@@ -191,7 +191,7 @@ test_style_labels, _ = classify_tweets_batch(test_texts)
 # Compute style performance matrix (for transformers)
 display_names = {
     "roberta": "RoBERTa", "deberta": "DeBERTa", "electra": "ELECTRA",
-    "bert": "BERT", "xlnet": "XLNet", "xtremedistil": "XtremeDistil",
+    "bert": "BERT", "bertweet": "BERTweet", "xtremedistil": "XtremeDistil",
 }
 perf_matrix = compute_style_performance_matrix(
     {display_names[k]: val_preds[k] for k in display_names},
@@ -319,7 +319,7 @@ from evaluation import run_full_evaluation
 
 display_names_all = {
     "roberta": "RoBERTa", "deberta": "DeBERTa", "electra": "ELECTRA",
-    "bert": "BERT", "xlnet": "XLNet", "xtremedistil": "XtremeDistil",
+    "bert": "BERT", "bertweet": "BERTweet", "xtremedistil": "XtremeDistil",
     "cnn": "CNN", "bilstm": "BiLSTM",
 }
 model_test_results = {display_names_all[k]: test_preds[k] for k in model_keys}

@@ -570,7 +570,7 @@ def run_full_evaluation(
     if model_output_dir:
         print("\n8. TRAINING CURVES")
         print("-"*40)
-        transformer_keys = ["roberta", "deberta", "electra", "bert", "xlnet", "xtremedistil"]
+        transformer_keys = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]
         plot_all_training_curves(model_output_dir, transformer_keys, output_dir)
         print("  Training curve plots saved.")
 

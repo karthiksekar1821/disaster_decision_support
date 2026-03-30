@@ -6,7 +6,7 @@ hyperparameter loading from Optuna tuning results.
 Usage (from src/training/):
     python train_model.py --model roberta --output_dir /path/to/output
     python train_model.py --model bert --output_dir /path/to/output
-    python train_model.py --model xlnet --output_dir /path/to/output
+    python train_model.py --model bertweet --output_dir /path/to/output
     python train_model.py --model xtremedistil --output_dir /path/to/output
 
 For Colab/Kaggle, import and call train_single_model().
@@ -155,12 +155,10 @@ def tokenize_dataset(dataset, tokenizer, max_length, model_key=None):
     """
     Tokenize all splits of a dataset.
 
-    For XLNet: uses left padding and removes token_type_ids.
+    Note: BERTweet expects tweets normalised with URLs replaced by HTTPURL
+    and mentions replaced by @USER. Our preprocessing removes these entirely,
+    which is compatible — BERTweet's tokenizer handles cleaned text correctly.
     """
-    # XLNet requires left padding
-    if model_key == "xlnet":
-        tokenizer.padding_side = "left"
-
     def tokenize_fn(examples):
         encoded = tokenizer(
             examples["tweet_text"],
@@ -168,9 +166,6 @@ def tokenize_dataset(dataset, tokenizer, max_length, model_key=None):
             padding="max_length",
             max_length=max_length,
         )
-        # XLNet: remove token_type_ids to avoid shape mismatch issues
-        if model_key == "xlnet" and "token_type_ids" in encoded:
-            del encoded["token_type_ids"]
         return encoded
 
     return dataset.map(tokenize_fn, batched=True)
@@ -215,7 +210,7 @@ def train_single_model(
     Train a single model with seed=42.
 
     Args:
-        model_key: One of 'roberta', 'deberta', 'electra', 'bert', 'xlnet', 'xtremedistil'
+        model_key: One of 'roberta', 'deberta', 'electra', 'bert', 'bertweet', 'xtremedistil'
         seed: Random seed (default: 42)
         output_dir: Base output directory
         dataset: Pre-loaded dataset (optional, will load if None)
@@ -247,7 +242,7 @@ def train_single_model(
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Tokenize (with XLNet-specific handling)
+    # Tokenize
     tokenized = tokenize_dataset(dataset, tokenizer, max_length, model_key=model_key)
 
     # Load pre-computed class weights if available, otherwise compute from training labels

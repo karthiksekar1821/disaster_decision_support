@@ -26,7 +26,7 @@ from context_features import extract_features_batch
 NUM_MODELS = 8
 MODEL_NAMES = [
     "RoBERTa", "DeBERTa", "ELECTRA",
-    "BERT", "XLNet", "XtremeDistil",
+    "BERT", "BERTweet", "XtremeDistil",
     "CNN", "BiLSTM",
 ]
 

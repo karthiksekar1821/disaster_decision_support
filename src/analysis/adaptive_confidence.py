@@ -20,7 +20,7 @@ def sweep_per_class_thresholds(
     num_classes,
     threshold_range=None,
     target_coverage=None,
-    alpha=0.5,
+    alpha=0.8,
 ):
     """
     Sweep thresholds per class on validation data.
@@ -38,7 +38,10 @@ def sweep_per_class_thresholds(
         num_classes: number of classes
         threshold_range: (start, stop, step) for threshold sweep
         target_coverage: if set, prefer thresholds that achieve this coverage
-        alpha: weight for F1 vs coverage in the objective (default 0.5)
+        alpha: weight for F1 vs coverage in the objective (default 0.8).
+               Higher alpha prioritises F1 improvement; lower values keep
+               more coverage.  With alpha=0.5, thresholds tend to be trivially
+               zero because the coverage penalty outweighs F1 gains.
 
     Returns:
         per_class_thresholds: dict mapping class_idx -> optimal threshold

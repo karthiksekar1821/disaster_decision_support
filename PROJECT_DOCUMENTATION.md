@@ -36,7 +36,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 | DeBERTa | Transformer | `microsoft/deberta-base` | Disentangled attention mechanism |
 | ELECTRA | Transformer | `google/electra-base-discriminator` | Replaced token detection |
 | BERT | Transformer | `bert-base-uncased` | Original bidirectional transformer |
-| XLNet | Transformer | `xlnet-base-cased` | Autoregressive, left padding required |
+| BERTweet | Transformer | `vinai/bertweet-base` | RoBERTa pre-trained on 850M English tweets |
 | XtremeDistil | Transformer | `microsoft/xtremedistil-l6-h256-uncased` | 6-layer distilled, efficient |
 | TextCNN | Non-transformer | N/A | Conv filters [2,3,4] × 128, random embeddings |
 | BiLSTM | Non-transformer | N/A | 256 hidden, dot-product attention, GloVe 100d |
@@ -100,13 +100,12 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 - **Functions:**
   - `compute_metrics(eval_pred)` — returns Macro F1 and accuracy
   - `load_data()` / `load_label_mapping()` — load parquets and label mappings
-  - `tokenize_dataset(dataset, tokenizer, max_length, model_key)` — tokenises with XLNet-specific left padding and token_type_ids removal
+  - `tokenize_dataset(dataset, tokenizer, max_length, model_key)` — tokenises all splits; BERTweet note about tweet normalisation included
   - `load_best_hyperparams(model_key)` — loads Optuna-tuned params if `best_hyperparams_{model_key}.json` exists
   - `train_single_model(model_key, seed, output_dir, ...)` — trains one model, saves predictions as `val_predictions.npz` / `test_predictions.npz`
 
-**XLNet Special Handling:**
-- `tokenizer.padding_side = "left"` set before tokenisation
-- `token_type_ids` removed from tokenised output (XLNet handles them differently)
+**BERTweet Note:**
+BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions by `@USER`. Our preprocessing removes these entirely, which is compatible — BERTweet's tokenizer handles cleaned text correctly. No special tokenisation handling is needed beyond AutoTokenizer.
 
 **Training History Format** (`training_history.json`):
 ```json
@@ -203,7 +202,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 
 ### `src/analysis/attribution_filter.py`
 - **Purpose:** Decision-Influencing Explainability via Attribution Filtering (Novelty 3)
-- **Supports:** RoBERTa, DeBERTa, ELECTRA, BERT, XLNet, XtremeDistil (embedding layer auto-detection)
+- **Supports:** RoBERTa, DeBERTa, ELECTRA, BERT, BERTweet, XtremeDistil (embedding layer auto-detection)
 - **Functions:**
   - `compute_attributions_for_batch(...)` — LayerIntegratedGradients on embedding layer
   - `compute_disaster_relevance_score(...)` — fraction of top-K tokens that are disaster-relevant
@@ -270,8 +269,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 
 3. TRANSFORMER TRAINING (src/training/train_model.py)
    For each of 6 transformers (seed=42):
-     Load data → Tokenize (XLNet: left pad, no token_type_ids)
-     → Train with WeightedTrainer + TrainingLossCallback
+     Load data → Tokenize → Train with WeightedTrainer + TrainingLossCallback
      → Save val_predictions.npz, test_predictions.npz, training_history.json, best_model/
 
 4. NON-TRANSFORMER TRAINING
@@ -308,7 +306,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 - **DeBERTa** — Disentangled attention captures fine-grained position-dependent semantics
 - **ELECTRA** — Replaced token detection is sample-efficient, good for noisy social media
 - **BERT** — Baseline bidirectional transformer, established benchmark
-- **XLNet** — Autoregressive pre-training captures longer-range dependencies
+- **BERTweet** — RoBERTa pre-trained on 850 million English tweets (2012–2019), the only domain-specific model in the ensemble. Understands Twitter-specific language patterns — informal grammar, abbreviations, and hashtag text — better than general-purpose transformers. Directly relevant to disaster tweet classification.
 - **XtremeDistil** — 6-layer distilled model tests whether smaller models suffice
 - **TextCNN** — Fast, strong at local n-gram patterns, complements transformer global attention
 - **BiLSTM** — Captures sequential dependencies differently from transformers; GloVe embeddings provide pre-trained word semantics without fine-tuning
@@ -339,7 +337,7 @@ Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates)
 | DeBERTa | — | — |
 | ELECTRA | — | — |
 | BERT | — | — |
-| XLNet | — | — |
+| BERTweet | — | — |
 | XtremeDistil | — | — |
 | CNN | — | — |
 | BiLSTM | — | — |
@@ -360,7 +358,7 @@ Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates)
 ### Why These 6 Transformer Models?
 1. **RoBERTa/DeBERTa/ELECTRA** — three different pre-training objectives provide complementary representations
 2. **BERT** — canonical baseline expected by reviewers
-3. **XLNet** — explores autoregressive pre-training which handles word order differently
+3. **BERTweet** — the only domain-specific model, pre-trained on 850M tweets; provides Twitter-native linguistic understanding that general-purpose transformers lack
 4. **XtremeDistil** — tests if a 6-layer distilled model can achieve competitive performance with much lower compute
 
 ### Why Single Seed Instead of Multi-Seed?
@@ -394,7 +392,7 @@ The panel requested removing multi-seed variance reporting. With 8 models, the c
 
 ### Models & Training
 4. **Why use class-weighted loss?** — Disaster datasets are imbalanced; `not_humanitarian` dominates. Balanced weights ensure minority classes receive proportional attention.
-5. **How does XLNet differ from other transformers?** — Uses left padding (all others use right padding) and does not use token_type_ids in the standard way.
+5. **How does BERTweet differ from other transformers?** — It is a RoBERTa-based model pre-trained on 850 million English tweets (2012–2019). Unlike the other five transformers which are trained on general text (Wikipedia, books, web crawls), BERTweet understands Twitter-specific language patterns — informal grammar, abbreviations, emoticons, and hashtag text. This makes it the only domain-specific model in the ensemble and provides fundamentally different linguistic knowledge. No special tokenisation handling is needed; AutoTokenizer loads its custom fastBPE tokenizer automatically.
 6. **What is XtremeDistil and why include it?** — A 6-layer distilled BERT variant from Microsoft. Tests whether model compression degrades performance on this task.
 7. **How does hyperparameter tuning work?** — Optuna samples from defined ranges using Bayesian optimisation (TPE), trains on 30% data for 3 epochs, and selects the configuration maximising validation Macro F1.
 8. **Why use training_history.json?** — Records per-epoch loss curves for visualisation, helping detect overfitting and compare convergence patterns across models.
