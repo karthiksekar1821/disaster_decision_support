@@ -20,15 +20,18 @@ def sweep_per_class_thresholds(
     num_classes,
     threshold_range=None,
     target_coverage=None,
-    alpha=0.8,
+    alpha=0.7,
+    min_threshold=0.3,
+    min_coverage=0.5,
 ):
     """
     Sweep thresholds per class on validation data.
 
     For each class c:
       - Consider only samples predicted as class c
-      - Sweep threshold t_c from 0.0 to 1.0
+      - Sweep threshold t_c from min_threshold to 1.0
       - Accept prediction only if prob[c] >= t_c
+      - Only consider thresholds where per-class coverage >= min_coverage
       - Choose t_c that maximizes: alpha * F1_c + (1-alpha) * coverage_c
 
     Args:
@@ -38,10 +41,14 @@ def sweep_per_class_thresholds(
         num_classes: number of classes
         threshold_range: (start, stop, step) for threshold sweep
         target_coverage: if set, prefer thresholds that achieve this coverage
-        alpha: weight for F1 vs coverage in the objective (default 0.8).
+        alpha: weight for F1 vs coverage in the objective (default 0.7).
                Higher alpha prioritises F1 improvement; lower values keep
-               more coverage.  With alpha=0.5, thresholds tend to be trivially
-               zero because the coverage penalty outweighs F1 gains.
+               more coverage.
+        min_threshold: minimum threshold floor for any class (default 0.3).
+               Prevents trivially-zero thresholds that accept everything.
+        min_coverage: minimum per-class coverage required (default 0.5).
+               Thresholds that reject more than half the predictions for
+               a class are skipped to avoid excessive abstention.
 
     Returns:
         per_class_thresholds: dict mapping class_idx -> optimal threshold
@@ -56,11 +63,16 @@ def sweep_per_class_thresholds(
     per_class_stats = {}
 
     for c in range(num_classes):
-        best_threshold = 0.0
+        # Enforce minimum threshold floor
+        best_threshold = float(min_threshold)
         best_score = -1.0
         best_stats = None
 
         for t in thresholds:
+            # Skip thresholds below the floor
+            if t < min_threshold:
+                continue
+
             # Samples predicted as class c with confidence >= t
             mask = (preds == c) & (probs[:, c] >= t)
             accepted = mask.sum()
@@ -73,6 +85,10 @@ def sweep_per_class_thresholds(
 
             # Coverage for this class
             coverage_c = accepted / max(total_predicted_c, 1)
+
+            # Skip if coverage drops below minimum
+            if coverage_c < min_coverage:
+                continue
 
             # F1 among accepted predictions for this class
             # We compute binary F1: did we correctly predict class c?
@@ -118,6 +134,31 @@ def sweep_per_class_thresholds(
                     "total_predicted": int(total_predicted_c),
                     "objective_score": float(score),
                 }
+
+        # If no valid threshold was found (best_stats is None),
+        # fall back to the minimum threshold and compute stats for it
+        if best_stats is None:
+            t = min_threshold
+            mask = (preds == c) & (probs[:, c] >= t)
+            accepted = mask.sum()
+            total_predicted_c = (preds == c).sum()
+            coverage_c = accepted / max(total_predicted_c, 1) if total_predicted_c > 0 else 0.0
+            correct = ((preds[mask] == labels[mask]).sum()) if accepted > 0 else 0
+            precision_c = correct / max(accepted, 1)
+            true_c_count = (labels == c).sum()
+            correctly_accepted_c = ((preds == c) & (labels == c) & (probs[:, c] >= t)).sum()
+            recall_c = correctly_accepted_c / true_c_count if true_c_count > 0 else 0.0
+            f1_c = 2 * precision_c * recall_c / (precision_c + recall_c) if (precision_c + recall_c) > 0 else 0.0
+            best_stats = {
+                "threshold": float(t),
+                "f1": float(f1_c),
+                "precision": float(precision_c),
+                "recall": float(recall_c),
+                "coverage": float(coverage_c),
+                "accepted": int(accepted),
+                "total_predicted": int(total_predicted_c),
+                "objective_score": float(alpha * f1_c + (1 - alpha) * coverage_c),
+            }
 
         per_class_thresholds[c] = best_threshold
         per_class_stats[c] = best_stats
