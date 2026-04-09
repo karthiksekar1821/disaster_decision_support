@@ -34,52 +34,25 @@ print("✅ Setup complete.")
 ## Cell 2 — Configure Paths for Kaggle
 
 ```python
-import sys, os, subprocess
+import os, sys
 
-REPO_DIR = "/kaggle/working/disaster_decision_support"
-sys.path.insert(0, os.path.join(REPO_DIR, "src", "training"))
-sys.path.insert(0, os.path.join(REPO_DIR, "src", "analysis"))
-sys.path.insert(0, os.path.join(REPO_DIR, "src", "evaluation"))
-sys.path.insert(0, os.path.join(REPO_DIR, "src", "data"))
-sys.path.insert(0, os.path.join(REPO_DIR, "src", "app"))
-
-# Read-only — existing trained models and predictions from saved version
-OUTPUT_DIR = "/kaggle/input/main-project/output"
-
-# Writable — all new outputs generated in this session
+# Paths
+OUTPUT_DIR  = "/kaggle/input/notebooks/karthiksekar1821/main-project/output"
 RESULTS_DIR = "/kaggle/working/results"
+DATA_DIR    = "/kaggle/input/datasets/karthiksekar1821/humaid"
+
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Copy raw data
-import shutil
-RAW_DIR = os.path.join(REPO_DIR, "data", "raw")
-os.makedirs(RAW_DIR, exist_ok=True)
-KAGGLE_DS_DIR = "/kaggle/input/datasets/karthiksekar1821/humaid"
+# Add project to path
+sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/training")
+sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/analysis")
+sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/evaluation")
+sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/data")
+sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/app")
 
-for split in ["train.parquet", "val.parquet", "test.parquet"]:
-    try:
-        shutil.copy(os.path.join(KAGGLE_DS_DIR, split), os.path.join(RAW_DIR, split))
-    except FileNotFoundError:
-        print(f"Warning: {split} not found in {KAGGLE_DS_DIR}")
-
-PROCESSED_DIR = os.path.join(REPO_DIR, "data", "processed")
-os.makedirs(PROCESSED_DIR, exist_ok=True)
-
-# Run data preparation
-print("Running data preparation...")
-subprocess.run(["python", "prepare_data.py"], cwd=os.path.join(REPO_DIR, "src", "data"), check=True)
-
-# Override config paths
-import config
-config.DATA_DIR = PROCESSED_DIR
-config.TRAIN_FILE = os.path.join(config.DATA_DIR, "train.parquet")
-config.VAL_FILE   = os.path.join(config.DATA_DIR, "val.parquet")
-config.TEST_FILE  = os.path.join(config.DATA_DIR, "test.parquet")
-config.LABEL_MAPPING_FILE = os.path.join(config.DATA_DIR, "label_mapping.json")
-
-print(f"Read-only model dir: {OUTPUT_DIR}")
-print(f"Writable results dir: {RESULTS_DIR}")
-print(f"SEED: {config.SEED}")
+print("OUTPUT_DIR:", OUTPUT_DIR)
+print("RESULTS_DIR:", RESULTS_DIR)
+print("DATA_DIR:", DATA_DIR)
 ```
 
 ---
@@ -143,11 +116,10 @@ bilstm_model, bilstm_vocab, bilstm_results = train_bilstm(
 ## Cell 5 — Load All Predictions
 
 ```python
-import numpy as np, json
+import numpy as np, json, pandas as pd
 
 def load_predictions(model_key, split="test"):
-    # Try seed_42 path first (transformer models)
-    path_with_seed = f"{OUTPUT_DIR}/{model_key}/seed_42/predictions/{split}_predictions.npz"
+    path_with_seed    = f"{OUTPUT_DIR}/{model_key}/seed_42/predictions/{split}_predictions.npz"
     path_without_seed = f"{OUTPUT_DIR}/{model_key}/predictions/{split}_predictions.npz"
 
     if os.path.exists(path_with_seed):
@@ -155,8 +127,11 @@ def load_predictions(model_key, split="test"):
     elif os.path.exists(path_without_seed):
         data = np.load(path_without_seed)
     else:
-        raise FileNotFoundError(f"No predictions found for {model_key} ({split})")
-
+        raise FileNotFoundError(
+            f"No predictions found for {model_key} ({split})\n"
+            f"  Checked: {path_with_seed}\n"
+            f"  Checked: {path_without_seed}"
+        )
     return {"preds": data["preds"], "labels": data["labels"], "probs": data["probs"]}
 
 # Load predictions from all 8 models
@@ -164,12 +139,28 @@ model_keys = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil
 val_preds = {k: load_predictions(k, "val") for k in model_keys}
 test_preds = {k: load_predictions(k, "test") for k in model_keys}
 
-from train_model import load_label_mapping
-label2id, id2label = load_label_mapping()
-class_names = [id2label[i] for i in range(len(id2label))]
+# Load tweet texts
+val_df   = pd.read_parquet(f"{DATA_DIR}/val.parquet")
+test_df  = pd.read_parquet(f"{DATA_DIR}/test.parquet")
 
-print(f"Classes: {class_names}")
-print(f"Test set size: {len(test_preds['roberta']['labels'])}")
+val_texts  = val_df["tweet_text"].tolist()[:len(val_preds["roberta"]["preds"])]
+test_texts = test_df["tweet_text"].tolist()[:len(test_preds["roberta"]["preds"])]
+
+# Extract labels and class names
+test_labels = test_preds["roberta"]["labels"]
+val_labels  = val_preds["roberta"]["labels"]
+class_names = [
+    "infrastructure_and_utility_damage",
+    "injured_or_dead_people",
+    "not_humanitarian",
+    "other_relevant_information",
+    "rescue_volunteering_or_donation_effort",
+]
+
+print(f"val_texts loaded: {len(val_texts)}")
+print(f"test_texts loaded: {len(test_texts)}")
+print(f"test_labels shape: {test_labels.shape}")
+print(f"class_names: {class_names}")
 ```
 
 ---
@@ -251,22 +242,45 @@ save_ensemble_artifacts(
 ## Cell 8 — Novelty 2: Class-Adaptive Confidence Thresholds
 
 ```python
-from adaptive_confidence import sweep_per_class_thresholds, evaluate_selective_prediction
+from adaptive_confidence import sweep_per_class_thresholds, apply_per_class_thresholds
 
 val_ensemble_probs, val_ensemble_preds = predict_with_dynamic_ensemble(
     meta_learner, scaler, val_probs_list, val_texts,
     test_style_labels=val_style_labels,
 )
 
-per_class_thresholds, per_class_stats = sweep_per_class_thresholds(
-    probs=val_ensemble_probs, preds=val_ensemble_preds,
-    labels=val_preds["roberta"]["labels"], num_classes=config.NUM_LABELS,
+# Sweep thresholds on validation set
+per_class_thresholds = sweep_per_class_thresholds(
+    ensemble_probs=val_ensemble_probs,
+    ensemble_preds=val_ensemble_preds,
+    true_labels=val_labels,
+    class_names=class_names,
 )
 
-selective_results, confidence_accepted_mask = evaluate_selective_prediction(
-    probs=ensemble_probs, preds=ensemble_preds, labels=test_labels,
-    per_class_thresholds=per_class_thresholds, class_names=class_names,
+print("\nPer-class thresholds:")
+for cls, t in per_class_thresholds.items():
+    print(f"  {cls}: {t:.2f}")
+
+# Apply thresholds to test set
+selective_results = apply_per_class_thresholds(
+    ensemble_probs=ensemble_probs,
+    ensemble_preds=ensemble_preds,
+    true_labels=test_labels,
+    per_class_thresholds=per_class_thresholds,
+    class_names=class_names,
 )
+
+confidence_accepted_mask = selective_results["accepted_mask"]
+
+# Report
+from sklearn.metrics import f1_score as sk_f1
+full_f1 = sk_f1(test_labels, ensemble_preds, average="macro")
+print(f"\nWithout selective prediction:  Macro F1 = {full_f1:.4f}")
+print(f"With class-adaptive thresholds:")
+print(f"  Coverage:  {selective_results['coverage']:.4f} ({selective_results['accepted_count']}/{selective_results['total']})")
+print(f"  Macro F1:  {selective_results['macro_f1']:.4f}")
+print(f"  Accuracy:  {selective_results['accuracy']:.4f}")
+print(f"  F1 improvement: +{selective_results['macro_f1'] - full_f1:.4f}")
 ```
 
 ---
