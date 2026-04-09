@@ -1,7 +1,6 @@
 """
 Unified training script for all transformer models.
-Supports class-weighted loss, training loss logging, and optional
-hyperparameter loading from Optuna tuning results.
+Supports class-weighted loss and training loss logging.
 
 Usage (from src/training/):
     python train_model.py --model roberta --output_dir /path/to/output
@@ -181,19 +180,6 @@ def compute_class_weights_from_labels(labels, num_classes):
     return weights.tolist()
 
 
-def load_best_hyperparams(model_key):
-    """
-    Load Optuna-tuned best hyperparameters for a model if available.
-
-    Returns dict of hyperparams or None if no tuning results exist.
-    """
-    hp_path = os.path.join(DATA_DIR, f"best_hyperparams_{model_key}.json")
-    if os.path.exists(hp_path):
-        with open(hp_path, "r") as f:
-            params = json.load(f)
-        print(f"  Loaded tuned hyperparameters from {hp_path}")
-        return params
-    return None
 
 
 # ── Training ─────────────────────────────────────────────────────────────────
@@ -266,16 +252,8 @@ def train_single_model(
     # Output directory for this specific run
     run_output_dir = os.path.join(output_dir, model_key)
 
-    # Build training arguments — start with defaults, then override with tuned params
+    # Build training arguments from shared defaults
     train_kwargs = dict(TRAINING_ARGS)
-
-    # Check for Optuna-tuned hyperparameters
-    best_hp = load_best_hyperparams(model_key)
-    if best_hp is not None:
-        for key in ["learning_rate", "warmup_ratio", "weight_decay", "per_device_train_batch_size"]:
-            if key in best_hp:
-                train_kwargs[key] = best_hp[key]
-                print(f"  Using tuned {key}: {best_hp[key]}")
 
     # Training arguments
     training_args = TrainingArguments(

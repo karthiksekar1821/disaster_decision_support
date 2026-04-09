@@ -1,23 +1,24 @@
 """
-Crisis Dashboard — Standalone Python script (Addition 7).
+Crisis Dashboard — Standalone Gradio application.
 
-Provides the inference pipeline and Gradio interface for the
+Provides the inference pipeline and a polished Gradio interface for the
 disaster tweet classification system using all 8 models.
 
 Usage (from Kaggle/Colab):
-    from crisis_dashboard import create_dashboard, classify_tweet
+    from crisis_dashboard import create_dashboard
     app = create_dashboard(model_dir="/path/to/models")
     app.launch()
 """
 
 import os
 import json
+import traceback
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 
-# ── Model Loading ────────────────────────────────────────────────────────────
+# ── Constants ────────────────────────────────────────────────────────────────
 
 TRANSFORMER_KEYS = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]
 ALL_MODEL_KEYS = TRANSFORMER_KEYS + ["cnn", "bilstm"]
@@ -33,65 +34,86 @@ DISPLAY_NAMES = {
     "bilstm": "BiLSTM",
 }
 
+# Operational guidance per predicted class
+CLASS_GUIDANCE = {
+    "infrastructure_and_utility_damage": "🏗️ Dispatch structural assessment teams. Check road, bridge, and utility status.",
+    "injured_or_dead_people": "🚑 Deploy medical response teams immediately. Activate casualty management protocol.",
+    "not_humanitarian": "ℹ️ No humanitarian action required. Monitor for updates.",
+    "other_relevant_information": "📋 Log for situational awareness. Share with coordination teams.",
+    "rescue_volunteering_or_donation_effort": "🤝 Coordinate with volunteer groups. Activate donation logistics pipeline.",
+}
+
+
+# ── Model Loading ────────────────────────────────────────────────────────────
 
 def load_transformer_model(model_dir, model_key, device="cpu"):
-    """Load a trained transformer model and tokenizer."""
-    model_path = os.path.join(model_dir, model_key, "best_model")
-    if not os.path.exists(model_path):
-        print(f"  Warning: {model_path} not found, skipping {model_key}")
+    """Load a trained transformer model and tokenizer from local checkpoint."""
+    # Try with seed_42 subfolder first, then without
+    path_with_seed = os.path.join(model_dir, model_key, "seed_42", "best_model")
+    path_without_seed = os.path.join(model_dir, model_key, "best_model")
+
+    if os.path.exists(path_with_seed):
+        model_path = path_with_seed
+    elif os.path.exists(path_without_seed):
+        model_path = path_without_seed
+    else:
+        print(f"  ⚠ {model_key}: no checkpoint at {path_with_seed} or {path_without_seed}")
         return None, None
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path)
-    model.to(device)
-    model.eval()
-
-    return model, tokenizer
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        model.to(device)
+        model.eval()
+        print(f"  ✅ {DISPLAY_NAMES[model_key]} loaded from {model_path}")
+        return model, tokenizer
+    except Exception as e:
+        print(f"  ❌ {model_key} failed to load: {e}")
+        return None, None
 
 
 def load_all_models(model_dir, device="cpu"):
-    """Load all available models."""
+    """Load all available models (transformers + CNN + BiLSTM)."""
     models = {}
     tokenizers = {}
 
-    # Load transformer models
     for key in TRANSFORMER_KEYS:
         model, tokenizer = load_transformer_model(model_dir, key, device)
         if model is not None:
             models[key] = model
             tokenizers[key] = tokenizer
-            print(f"  Loaded {DISPLAY_NAMES[key]}")
 
-    # Load CNN and BiLSTM if available
+    # CNN
     cnn_model_path = os.path.join(model_dir, "cnn", "best_model", "model.pt")
     if os.path.exists(cnn_model_path):
         try:
             from cnn_classifier import TextCNN
-            vocab = torch.load(os.path.join(model_dir, "cnn", "best_model", "vocab.pt"))
+            vocab = torch.load(os.path.join(model_dir, "cnn", "best_model", "vocab.pt"),
+                               map_location=device)
             cnn_model = TextCNN(vocab_size=len(vocab), num_classes=5)
             cnn_model.load_state_dict(torch.load(cnn_model_path, map_location=device))
-            cnn_model.to(device)
-            cnn_model.eval()
+            cnn_model.to(device).eval()
             models["cnn"] = cnn_model
-            tokenizers["cnn"] = vocab  # vocab serves as tokenizer for CNN
-            print(f"  Loaded CNN")
+            tokenizers["cnn"] = vocab
+            print(f"  ✅ CNN loaded")
         except Exception as e:
-            print(f"  Warning: Could not load CNN: {e}")
+            print(f"  ❌ CNN failed: {e}")
 
+    # BiLSTM
     bilstm_model_path = os.path.join(model_dir, "bilstm", "best_model", "model.pt")
     if os.path.exists(bilstm_model_path):
         try:
             from bilstm_classifier import BiLSTMAttention
-            vocab = torch.load(os.path.join(model_dir, "bilstm", "best_model", "vocab.pt"))
+            vocab = torch.load(os.path.join(model_dir, "bilstm", "best_model", "vocab.pt"),
+                               map_location=device)
             bilstm_model = BiLSTMAttention(vocab_size=len(vocab), num_classes=5)
             bilstm_model.load_state_dict(torch.load(bilstm_model_path, map_location=device))
-            bilstm_model.to(device)
-            bilstm_model.eval()
+            bilstm_model.to(device).eval()
             models["bilstm"] = bilstm_model
             tokenizers["bilstm"] = vocab
-            print(f"  Loaded BiLSTM")
+            print(f"  ✅ BiLSTM loaded")
         except Exception as e:
-            print(f"  Warning: Could not load BiLSTM: {e}")
+            print(f"  ❌ BiLSTM failed: {e}")
 
     return models, tokenizers
 
@@ -99,108 +121,208 @@ def load_all_models(model_dir, device="cpu"):
 # ── Inference ────────────────────────────────────────────────────────────────
 
 def predict_single_tweet(text, models, tokenizers, device="cpu"):
-    """
-    Run inference on a single tweet through all loaded models.
-
-    Returns:
-        model_probs: dict of model_key -> probability array of shape (num_classes,)
-    """
+    """Run inference on a single tweet through all loaded models."""
     model_probs = {}
 
     for key, model in models.items():
-        if key in TRANSFORMER_KEYS:
-            tokenizer = tokenizers[key]
-            inputs = tokenizer(
-                text, return_tensors="pt", truncation=True,
-                padding="max_length", max_length=128,
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            with torch.no_grad():
-                logits = model(**inputs).logits
-                probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-            model_probs[key] = probs
+        try:
+            if key in TRANSFORMER_KEYS:
+                tokenizer = tokenizers[key]
+                inputs = tokenizer(
+                    text, return_tensors="pt", truncation=True,
+                    padding="max_length", max_length=128,
+                )
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    logits = model(**inputs).logits
+                    probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+                model_probs[key] = probs
 
-        elif key in ("cnn", "bilstm"):
-            vocab = tokenizers[key]
-            encoded = vocab.encode(text)
-            tensor = torch.tensor([encoded], dtype=torch.long).to(device)
-            with torch.no_grad():
-                logits = model(tensor)
-                probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
-            model_probs[key] = probs
+            elif key in ("cnn", "bilstm"):
+                vocab = tokenizers[key]
+                encoded = vocab.encode(text)
+                tensor = torch.tensor([encoded], dtype=torch.long).to(device)
+                with torch.no_grad():
+                    logits = model(tensor)
+                    probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+                model_probs[key] = probs
+        except Exception as e:
+            print(f"  ⚠ Inference failed for {key}: {e}")
 
     return model_probs
 
 
 def classify_tweet(
-    text,
-    models,
-    tokenizers,
-    meta_learner=None,
-    scaler=None,
-    class_names=None,
-    device="cpu",
+    text, models, tokenizers,
+    meta_learner=None, scaler=None,
+    class_names=None, device="cpu",
 ):
     """
     Classify a single tweet using the dynamic ensemble.
 
-    Returns:
-        result dict with predictions, probabilities, style, and per-model details
+    Returns a result dict or a dict with 'error' key on failure.
     """
-    from model_characterisation import classify_tweet_style
+    try:
+        from model_characterisation import classify_tweet_style
 
-    # Get tweet style
-    style, style_scores = classify_tweet_style(text)
+        style, style_scores = classify_tweet_style(text)
+        model_probs = predict_single_tweet(text, models, tokenizers, device)
 
-    # Get per-model predictions
-    model_probs = predict_single_tweet(text, models, tokenizers, device)
+        if not model_probs:
+            return {"error": "No models produced predictions. Check model loading logs."}
 
-    if not model_probs:
-        return {"error": "No models loaded"}
+        if meta_learner is not None and scaler is not None:
+            from dynamic_ensemble import build_meta_features
 
-    # If meta-learner is available, use dynamic ensemble
-    if meta_learner is not None and scaler is not None:
-        from dynamic_ensemble import build_meta_features
-        from model_characterisation import STYLE_CATEGORIES
+            ordered_keys = [k for k in ALL_MODEL_KEYS if k in model_probs]
+            probs_list = [model_probs[k].reshape(1, -1) for k in ordered_keys]
 
-        # Build probs list in correct order
-        ordered_keys = [k for k in ALL_MODEL_KEYS if k in model_probs]
-        probs_list = [model_probs[k].reshape(1, -1) for k in ordered_keys]
+            meta_features, _ = build_meta_features(
+                probs_list, [text], style_labels=[style]
+            )
+            meta_features_scaled = scaler.transform(meta_features)
+            ensemble_probs = meta_learner.predict_proba(meta_features_scaled)[0]
+            ensemble_pred = int(np.argmax(ensemble_probs))
+        else:
+            all_probs = np.stack(list(model_probs.values()))
+            ensemble_probs = all_probs.mean(axis=0)
+            ensemble_pred = int(np.argmax(ensemble_probs))
 
-        meta_features, _ = build_meta_features(
-            probs_list, [text], style_labels=[style]
-        )
-        meta_features_scaled = scaler.transform(meta_features)
-        ensemble_probs = meta_learner.predict_proba(meta_features_scaled)[0]
-        ensemble_pred = int(np.argmax(ensemble_probs))
-    else:
-        # Simple average ensemble
-        all_probs = np.stack(list(model_probs.values()))
-        ensemble_probs = all_probs.mean(axis=0)
-        ensemble_pred = int(np.argmax(ensemble_probs))
+        pred_class = class_names[ensemble_pred] if class_names else str(ensemble_pred)
 
-    # Build result
-    pred_class = class_names[ensemble_pred] if class_names else str(ensemble_pred)
+        return {
+            "predicted_class": pred_class,
+            "confidence": float(ensemble_probs[ensemble_pred]),
+            "tweet_style": style,
+            "style_scores": style_scores,
+            "ensemble_probabilities": {
+                class_names[i] if class_names else str(i): float(p)
+                for i, p in enumerate(ensemble_probs)
+            },
+            "per_model": {
+                DISPLAY_NAMES.get(k, k): {
+                    "predicted_class": class_names[int(np.argmax(p))] if class_names else str(np.argmax(p)),
+                    "confidence": float(np.max(p)),
+                }
+                for k, p in model_probs.items()
+            },
+        }
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"Classification error:\n{tb}")
+        return {"error": f"Classification failed: {str(e)}"}
 
-    result = {
-        "predicted_class": pred_class,
-        "confidence": float(ensemble_probs[ensemble_pred]),
-        "tweet_style": style,
-        "style_scores": style_scores,
-        "ensemble_probabilities": {
-            class_names[i] if class_names else str(i): float(p)
-            for i, p in enumerate(ensemble_probs)
-        },
-        "per_model": {
-            DISPLAY_NAMES.get(k, k): {
-                "predicted_class": class_names[int(np.argmax(p))] if class_names else str(np.argmax(p)),
-                "confidence": float(np.max(p)),
-            }
-            for k, p in model_probs.items()
-        },
-    }
 
-    return result
+# ── HTML Helpers ─────────────────────────────────────────────────────────────
+
+def _confidence_color(conf):
+    if conf >= 0.8:
+        return "#22c55e"  # green
+    elif conf >= 0.6:
+        return "#f59e0b"  # orange
+    return "#ef4444"      # red
+
+
+def _build_prediction_card(result, class_names):
+    """Build an HTML card showing the main prediction."""
+    pred = result["predicted_class"]
+    conf = result["confidence"]
+    style = result["tweet_style"]
+    guidance = CLASS_GUIDANCE.get(pred, "")
+    color = _confidence_color(conf)
+
+    return f"""
+    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+        Predicted Category
+      </div>
+      <div style="font-size:20px;font-weight:700;color:#1a1a2e;margin-bottom:12px;">
+        {pred.replace('_', ' ').title()}
+      </div>
+      <div style="display:inline-block;background:{color};color:#fff;padding:4px 14px;
+                  border-radius:20px;font-size:14px;font-weight:600;margin-bottom:16px;">
+        Confidence: {conf:.1%}
+      </div>
+      <div style="margin-top:12px;font-size:14px;color:#374151;">
+        <strong>Tweet Style:</strong> {style}
+      </div>
+      <div style="margin-top:16px;padding:12px;background:#f0fdf4;border-left:4px solid #22c55e;
+                  border-radius:0 8px 8px 0;font-size:13px;color:#166534;">
+        <strong>Action:</strong> {guidance}
+      </div>
+    </div>
+    """
+
+
+def _build_probability_bars(result, class_names):
+    """Build styled HTML probability bars for each class."""
+    probs = result["ensemble_probabilities"]
+    sorted_probs = sorted(probs.items(), key=lambda x: -x[1])
+
+    bars_html = ""
+    for cls, prob in sorted_probs:
+        pct = prob * 100
+        label = cls.replace("_", " ").title()
+        color = _confidence_color(prob) if prob > 0.3 else "#94a3b8"
+        bars_html += f"""
+        <div style="margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:#374151;margin-bottom:3px;">
+            <span>{label}</span>
+            <span style="font-weight:600;">{prob:.4f}</span>
+          </div>
+          <div style="background:#e5e7eb;border-radius:6px;height:10px;overflow:hidden;">
+            <div style="width:{pct}%;background:{color};height:100%;border-radius:6px;
+                        transition:width 0.5s ease;"></div>
+          </div>
+        </div>
+        """
+
+    return f"""
+    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">
+        Class Probabilities
+      </div>
+      {bars_html}
+    </div>
+    """
+
+
+def _build_model_table(result):
+    """Build an HTML table showing per-model predictions."""
+    rows_html = ""
+    for name, info in result["per_model"].items():
+        pred = info["predicted_class"].replace("_", " ").title()
+        conf = info["confidence"]
+        color = _confidence_color(conf)
+        rows_html += f"""
+        <tr>
+          <td style="padding:8px 12px;font-weight:500;border-bottom:1px solid #f3f4f6;">{name}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;">{pred}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;text-align:right;">
+            <span style="color:{color};font-weight:600;">{conf:.4f}</span>
+          </td>
+        </tr>
+        """
+
+    return f"""
+    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">
+        Per-Model Predictions
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb;">
+            <th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280;">Model</th>
+            <th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280;">Prediction</th>
+            <th style="padding:8px 12px;text-align:right;font-size:12px;color:#6b7280;">Confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+      </table>
+    </div>
+    """
 
 
 # ── Gradio Dashboard ─────────────────────────────────────────────────────────
@@ -229,20 +351,31 @@ def create_dashboard(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load models
-    print("Loading models...")
-    models, tokenizers = load_all_models(model_dir, device)
-    print(f"  Loaded {len(models)} models: {list(models.keys())}")
+    # ── Load models ──
+    print("=" * 60)
+    print("CRISIS DASHBOARD — Loading Models")
+    print("=" * 60)
+    print(f"  Device: {device}")
+    print(f"  Model directory: {model_dir}")
 
-    # Load label mapping
+    models, tokenizers = load_all_models(model_dir, device)
+    print(f"\n  Total loaded: {len(models)} models — {list(models.keys())}")
+
+    if not models:
+        print("  ❌ FATAL: No models loaded. Check model_dir path.")
+
+    # ── Load label mapping ──
     class_names = None
     if label_mapping_path and os.path.exists(label_mapping_path):
         with open(label_mapping_path) as f:
             mapping = json.load(f)
         id2label = {int(k): v for k, v in mapping["id2label"].items()}
         class_names = [id2label[i] for i in range(len(id2label))]
+        print(f"  Label mapping loaded: {class_names}")
+    else:
+        print(f"  ⚠ label_mapping_path not found: {label_mapping_path}")
 
-    # Load meta-learner if available
+    # ── Load meta-learner ──
     meta_learner = None
     scaler = None
     if ensemble_dir:
@@ -251,11 +384,18 @@ def create_dashboard(
         if os.path.exists(ml_path) and os.path.exists(sc_path):
             meta_learner = joblib.load(ml_path)
             scaler = joblib.load(sc_path)
-            print("  Loaded meta-learner and scaler")
+            print(f"  ✅ Meta-learner loaded from {ml_path}")
+            print(f"  ✅ Scaler loaded from {sc_path}")
+        else:
+            print(f"  ⚠ Ensemble artifacts not found at {ensemble_dir}")
+    print("=" * 60)
 
+    # ── Prediction function ──
     def predict_fn(tweet_text):
-        if not tweet_text.strip():
-            return "Please enter a tweet.", "", ""
+        empty = ('<div style="padding:20px;color:#9ca3af;text-align:center;">'
+                 'Enter a tweet and click Classify.</div>')
+        if not tweet_text or not tweet_text.strip():
+            return empty, empty, empty
 
         result = classify_tweet(
             tweet_text, models, tokenizers,
@@ -263,76 +403,91 @@ def create_dashboard(
         )
 
         if "error" in result:
-            return result["error"], "", ""
+            err_html = (f'<div style="padding:20px;color:#ef4444;font-weight:600;">'
+                        f'Error: {result["error"]}</div>')
+            return err_html, "", ""
 
-        # Format main prediction
-        main_output = (
-            f"**Predicted Category:** {result['predicted_class']}\n\n"
-            f"**Confidence:** {result['confidence']:.4f}\n\n"
-            f"**Tweet Style:** {result['tweet_style']}"
-        )
+        pred_card = _build_prediction_card(result, class_names)
+        prob_bars = _build_probability_bars(result, class_names)
+        model_table = _build_model_table(result)
+        return pred_card, prob_bars, model_table
 
-        # Format ensemble probabilities
-        prob_output = "\n".join([
-            f"- {cls}: {prob:.4f}"
-            for cls, prob in sorted(
-                result['ensemble_probabilities'].items(),
-                key=lambda x: -x[1]
-            )
-        ])
+    # ── Custom CSS ──
+    custom_css = """
+    .gradio-container { max-width: 1100px !important; margin: auto; }
+    .main-header {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        color: white; padding: 32px 28px; border-radius: 16px;
+        margin-bottom: 24px; text-align: center;
+    }
+    .main-header h1 { font-size: 28px; margin: 0 0 6px 0; font-weight: 700; }
+    .main-header p { font-size: 14px; color: #94a3b8; margin: 0; }
+    """
 
-        # Format per-model results
-        model_output = "\n".join([
-            f"- **{name}:** {info['predicted_class']} ({info['confidence']:.4f})"
-            for name, info in result['per_model'].items()
-        ])
-
-        return main_output, prob_output, model_output
-
-    # Build Gradio interface
+    # ── Build interface ──
     with gr.Blocks(
-        title="Crisis Tweet Classification Dashboard",
+        title="Crisis Tweet Classification",
         theme=gr.themes.Soft(),
+        css=custom_css,
     ) as app:
-        gr.Markdown("# 🚨 Crisis Tweet Classification Dashboard")
-        gr.Markdown(
-            "Classify disaster tweets using an 8-model dynamic ensemble "
-            "(6 transformers + CNN + BiLSTM) with tweet style analysis."
-        )
+
+        # Header
+        gr.HTML("""
+        <div class="main-header">
+            <h1>🚨 Crisis Tweet Classification Dashboard</h1>
+            <p>8-model dynamic ensemble · tweet style analysis · attribution-based reliability</p>
+        </div>
+        """)
+
+        # Input area
+        with gr.Row():
+            with gr.Column(scale=3):
+                tweet_input = gr.Textbox(
+                    label="Tweet Text",
+                    placeholder="Enter a disaster-related tweet here, e.g. Roads flooded in downtown area, rescue teams needed immediately",
+                    lines=4,
+                    max_lines=6,
+                )
+            with gr.Column(scale=1, min_width=160):
+                gr.HTML("<div style='height:8px'></div>")
+                classify_btn = gr.Button("🔍 Classify", variant="primary", size="lg")
+                clear_btn = gr.ClearButton(components=[tweet_input], value="🗑 Clear", size="lg")
+
+        gr.HTML("<div style='margin:16px 0'></div>")
+
+        # Results — two-column layout
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1):
+                pred_output = gr.HTML(
+                    value='<div style="padding:20px;color:#9ca3af;text-align:center;">Results will appear here.</div>'
+                )
+            with gr.Column(scale=1):
+                prob_output = gr.HTML(value="")
+
+        gr.HTML("<div style='margin:12px 0'></div>")
 
         with gr.Row():
-            tweet_input = gr.Textbox(
-                label="Enter Tweet",
-                placeholder="Type or paste a disaster-related tweet here...",
-                lines=3,
-            )
-
-        classify_btn = gr.Button("🔍 Classify Tweet", variant="primary")
-
-        with gr.Row():
-            with gr.Column():
-                main_output = gr.Markdown(label="Classification Result")
-            with gr.Column():
-                prob_output = gr.Markdown(label="Class Probabilities")
-            with gr.Column():
-                model_output = gr.Markdown(label="Per-Model Predictions")
+            model_output = gr.HTML(value="")
 
         classify_btn.click(
             fn=predict_fn,
             inputs=[tweet_input],
-            outputs=[main_output, prob_output, model_output],
+            outputs=[pred_output, prob_output, model_output],
         )
 
-        # Example tweets
+        gr.HTML("<div style='margin:20px 0'></div>")
+
+        # Example tweets — one per class
         gr.Examples(
             examples=[
                 ["HELP! Building collapsed, people trapped inside! Send rescue NOW!"],
-                ["The Red Cross has set up 3 relief camps in the affected district."],
-                ["I can see flooding from my window, water is rising fast near the bridge."],
-                ["Hurricane Maria has been downgraded to Category 2 as it moves inland."],
+                ["3 confirmed dead and dozens injured after the earthquake hit the coastal town this morning"],
+                ["The Red Cross has set up 3 relief camps in the affected district, donations needed urgently"],
+                ["Hurricane has been downgraded to Category 2 as it moves inland, power outages reported"],
                 ["Just watched a great movie tonight, loved the special effects!"],
             ],
             inputs=[tweet_input],
+            label="Example Tweets (one per class)",
         )
 
     return app

@@ -9,6 +9,7 @@
 
 - Create a Kaggle notebook with **GPU T4 x2** accelerator
 - Add your dataset: `karthiksekar1821/humaid` (contains `train.parquet`, `val.parquet`, `test.parquet`)
+- Add saved output as input: mount the previous notebook output at `/kaggle/input/main-project/`
 - Clone the GitHub repo
 
 ---
@@ -25,9 +26,6 @@ if not os.path.exists("/kaggle/working/disaster_decision_support"):
         "/kaggle/working/disaster_decision_support"
     ], check=True)
 
-# Install dependencies not pre-installed on Kaggle
-subprocess.run(["pip", "install", "-q", "captum", "optuna"], check=True)
-
 print("✅ Setup complete.")
 ```
 
@@ -36,7 +34,7 @@ print("✅ Setup complete.")
 ## Cell 2 — Configure Paths for Kaggle
 
 ```python
-import sys, os
+import sys, os, subprocess
 
 REPO_DIR = "/kaggle/working/disaster_decision_support"
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "training"))
@@ -45,8 +43,12 @@ sys.path.insert(0, os.path.join(REPO_DIR, "src", "evaluation"))
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "data"))
 sys.path.insert(0, os.path.join(REPO_DIR, "src", "app"))
 
-OUTPUT_DIR = "/kaggle/working/output"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Read-only — existing trained models and predictions from saved version
+OUTPUT_DIR = "/kaggle/input/main-project/output"
+
+# Writable — all new outputs generated in this session
+RESULTS_DIR = "/kaggle/working/results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Copy raw data
 import shutil
@@ -75,35 +77,18 @@ config.VAL_FILE   = os.path.join(config.DATA_DIR, "val.parquet")
 config.TEST_FILE  = os.path.join(config.DATA_DIR, "test.parquet")
 config.LABEL_MAPPING_FILE = os.path.join(config.DATA_DIR, "label_mapping.json")
 
-print(f"Output dir: {OUTPUT_DIR}")
+print(f"Read-only model dir: {OUTPUT_DIR}")
+print(f"Writable results dir: {RESULTS_DIR}")
 print(f"SEED: {config.SEED}")
 ```
 
 ---
 
-## Cell 3 — (Optional) Hyperparameter Tuning
-
-Run Optuna-based tuning per model. Each model runs 20 trials on 30% of data.
-
-> **⏱ ~30-60 min per model on T4 GPU.**
-
-```python
-from hyperparameter_tuning import run_hyperparameter_tuning
-
-# Tune one model at a time (optional — skip for default hyperparameters)
-# run_hyperparameter_tuning("roberta", OUTPUT_DIR, n_trials=20)
-# run_hyperparameter_tuning("deberta", OUTPUT_DIR, n_trials=20)
-# ... etc for each model
-```
-
----
-
-## Cell 4 — Train All Six Transformer Models (seed=42)
+## Cell 3 — Train All Six Transformer Models (seed=42)
 
 ```python
 from train_model import train_single_model
 
-# Train each model — uses tuned hyperparams if available
 for model_key in ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]:
     result = train_single_model(model_key, seed=42, output_dir=OUTPUT_DIR)
     print(f"✅ {model_key} done — Test F1: {result['test_metrics']['eval_macro_f1']:.4f}")
@@ -111,11 +96,15 @@ for model_key in ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedi
 
 ---
 
-## Cell 5 — Train Non-Transformer Models
+## Cell 4 — Train Non-Transformer Models
 
 ```python
 import numpy as np
 from datasets import load_dataset
+
+# Install captum here (after transformer training) to avoid numpy
+# binary incompatibility that would require a kernel restart.
+subprocess.run(["pip", "install", "-q", "captum"], check=True)
 
 dataset = load_dataset("parquet", data_files={
     "train":      config.TRAIN_FILE,
@@ -151,14 +140,23 @@ bilstm_model, bilstm_vocab, bilstm_results = train_bilstm(
 
 ---
 
-## Cell 6 — Load All Predictions
+## Cell 5 — Load All Predictions
 
 ```python
 import numpy as np, json
 
 def load_predictions(model_key, split="test"):
-    pred_path = f"{OUTPUT_DIR}/{model_key}/predictions/{split}_predictions.npz"
-    data = np.load(pred_path)
+    # Try seed_42 path first (transformer models)
+    path_with_seed = f"{OUTPUT_DIR}/{model_key}/seed_42/predictions/{split}_predictions.npz"
+    path_without_seed = f"{OUTPUT_DIR}/{model_key}/predictions/{split}_predictions.npz"
+
+    if os.path.exists(path_with_seed):
+        data = np.load(path_with_seed)
+    elif os.path.exists(path_without_seed):
+        data = np.load(path_without_seed)
+    else:
+        raise FileNotFoundError(f"No predictions found for {model_key} ({split})")
+
     return {"preds": data["preds"], "labels": data["labels"], "probs": data["probs"]}
 
 # Load predictions from all 8 models
@@ -176,7 +174,7 @@ print(f"Test set size: {len(test_preds['roberta']['labels'])}")
 
 ---
 
-## Cell 7 — Model Characterisation (Tweet Styles)
+## Cell 6 — Model Characterisation (Tweet Styles)
 
 ```python
 from model_characterisation import (
@@ -200,7 +198,7 @@ perf_matrix = compute_style_performance_matrix(
     save_dir=config.DATA_DIR,
 )
 
-EVAL_DIR = os.path.join(OUTPUT_DIR, "evaluation_results")
+EVAL_DIR = os.path.join(RESULTS_DIR, "evaluation_results")
 os.makedirs(EVAL_DIR, exist_ok=True)
 plot_style_performance_heatmap(
     perf_matrix, list(display_names.values()),
@@ -210,7 +208,7 @@ plot_style_performance_heatmap(
 
 ---
 
-## Cell 8 — Dynamic Ensemble (8 Models + Style Features)
+## Cell 7 — Dynamic Ensemble (8 Models + Style Features)
 
 ```python
 from dynamic_ensemble import (
@@ -241,7 +239,7 @@ ensemble_metrics = evaluate_dynamic_ensemble(
     ensemble_preds, ensemble_probs, test_labels, class_names,
 )
 
-ENSEMBLE_DIR = os.path.join(OUTPUT_DIR, "ensemble")
+ENSEMBLE_DIR = os.path.join(RESULTS_DIR, "ensemble")
 save_ensemble_artifacts(
     meta_learner, scaler, ensemble_probs, ensemble_preds,
     test_labels, ENSEMBLE_DIR,
@@ -250,7 +248,7 @@ save_ensemble_artifacts(
 
 ---
 
-## Cell 9 — Novelty 2: Class-Adaptive Confidence Thresholds
+## Cell 8 — Novelty 2: Class-Adaptive Confidence Thresholds
 
 ```python
 from adaptive_confidence import sweep_per_class_thresholds, evaluate_selective_prediction
@@ -273,17 +271,21 @@ selective_results, confidence_accepted_mask = evaluate_selective_prediction(
 
 ---
 
-## Cell 10 — Novelty 3: Attribution-Based Reliability Filter
+## Cell 9 — Novelty 3: Attribution-Based Reliability Filter
 
 ```python
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 from attribution_filter import compute_attributions_for_batch, flag_unreliable_predictions, combined_abstention
 
-MODEL_PATH = f"{OUTPUT_DIR}/roberta/best_model"
+# Load RoBERTa from saved output (try seed_42 path first)
+roberta_path = f"{OUTPUT_DIR}/roberta/seed_42/best_model"
+if not os.path.exists(roberta_path):
+    roberta_path = f"{OUTPUT_DIR}/roberta/best_model"
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+tokenizer = AutoTokenizer.from_pretrained(roberta_path)
+model = AutoModelForSequenceClassification.from_pretrained(roberta_path)
 model.to(device).eval()
 
 N_SAMPLES = min(500, len(test_texts))
@@ -312,7 +314,7 @@ combined_mask, combined_results = combined_abstention(
 
 ---
 
-## Cell 11 — Full Evaluation Report
+## Cell 10 — Full Evaluation Report
 
 ```python
 from evaluation import run_full_evaluation
@@ -341,20 +343,23 @@ run_full_evaluation(
 
 ---
 
-## Cell 12 — Save Final Models
+## Cell 11 — Save Final Models
 
 ```python
 import shutil
 
-FINAL_DIR = os.path.join(OUTPUT_DIR, "final_models")
+FINAL_DIR = os.path.join(RESULTS_DIR, "final_models")
 for model_key in model_keys:
-    src = f"{OUTPUT_DIR}/{model_key}/best_model"
+    # Try seed_42 path first
+    src = f"{OUTPUT_DIR}/{model_key}/seed_42/best_model"
+    if not os.path.exists(src):
+        src = f"{OUTPUT_DIR}/{model_key}/best_model"
     dst = f"{FINAL_DIR}/{model_key}/best_model"
     if os.path.exists(src):
         shutil.copytree(src, dst, dirs_exist_ok=True)
         print(f"✅ Saved {model_key} → {dst}")
 
-print("\n✅ All done! Download results from /kaggle/working/output/")
+print(f"\n✅ All done! Results saved to {RESULTS_DIR}")
 ```
 
 ---
@@ -364,7 +369,6 @@ print("\n✅ All done! Download results from /kaggle/working/output/")
 | Step | Project File Used | Location |
 |------|------------------|----------|
 | Data Prep | `prepare_data.py`, `split.py`, `label_utils.py`, `preprocessing.py` | `src/data/` |
-| HP Tuning | `hyperparameter_tuning.py`, `config.py` | `src/training/` |
 | Training | `train_model.py`, `config.py` | `src/training/` |
 | CNN | `cnn_classifier.py` | `src/analysis/` |
 | BiLSTM | `bilstm_classifier.py` | `src/analysis/` |

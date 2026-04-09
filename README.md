@@ -44,7 +44,7 @@ Per-class abstention thresholds swept on the validation set.
 Integrated Gradients attributions flag unreliable high-confidence predictions.
 
 ## Architecture
-- **Training**: Class-weighted cross-entropy, seed=42, optional Optuna hyperparameter tuning
+- **Training**: Class-weighted cross-entropy, seed=42
 - **Ensemble**: 8-model meta-learner with style features (Novelty 1)
 - **Selective Prediction**: Per-class thresholds (Novelty 2) + attribution check (Novelty 3)
 
@@ -53,16 +53,15 @@ All training runs on Kaggle (T4 GPU). See `KAGGLE_RUN_GUIDE.md`.
 
 ## Run Order
 1. `src/data/prepare_data.py` — preprocess & filter to 5 classes
-2. `src/training/hyperparameter_tuning.py` — (optional) Optuna tuning per model
-3. `src/training/train_model.py --model roberta` — train each transformer (seed=42)
-4. `src/analysis/cnn_classifier.py` — train TextCNN
-5. `src/analysis/bilstm_classifier.py` — train BiLSTM
-6. `src/analysis/model_characterisation.py` — tweet style analysis
-7. `src/analysis/dynamic_ensemble.py` — train meta-learner (8 models)
-8. `src/analysis/adaptive_confidence.py` — per-class thresholds
-9. `src/analysis/attribution_filter.py` — attribution reliability check
-10. `src/evaluation/evaluation.py` — comprehensive evaluation
-11. `src/app/crisis_dashboard.py` — Gradio dashboard
+2. `src/training/train_model.py --model roberta` — train each transformer (seed=42)
+3. `src/analysis/cnn_classifier.py` — train TextCNN
+4. `src/analysis/bilstm_classifier.py` — train BiLSTM
+5. `src/analysis/model_characterisation.py` — tweet style analysis
+6. `src/analysis/dynamic_ensemble.py` — train meta-learner (8 models)
+7. `src/analysis/adaptive_confidence.py` — per-class thresholds
+8. `src/analysis/attribution_filter.py` — attribution reliability check
+9. `src/evaluation/evaluation.py` — comprehensive evaluation
+10. `src/app/crisis_dashboard.py` — Gradio dashboard
 
 ## Dependencies
 ```

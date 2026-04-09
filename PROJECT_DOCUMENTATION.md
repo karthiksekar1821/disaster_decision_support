@@ -101,7 +101,6 @@ This project classifies disaster-related tweets into **5 humanitarian categories
   - `compute_metrics(eval_pred)` — returns Macro F1 and accuracy
   - `load_data()` / `load_label_mapping()` — load parquets and label mappings
   - `tokenize_dataset(dataset, tokenizer, max_length, model_key)` — tokenises all splits; BERTweet note about tweet normalisation included
-  - `load_best_hyperparams(model_key)` — loads Optuna-tuned params if `best_hyperparams_{model_key}.json` exists
   - `train_single_model(model_key, seed, output_dir, ...)` — trains one model, saves predictions as `val_predictions.npz` / `test_predictions.npz`
 
 **BERTweet Note:**
@@ -116,25 +115,6 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
   "val_macro_f1": [0.72, 0.78, 0.81, 0.83, 0.84]
 }
 ```
-
-### `src/training/hyperparameter_tuning.py`
-- **Purpose:** Optuna-based Bayesian hyperparameter optimisation per model
-- **Search space per model:**
-  - `learning_rate`: log-uniform in [1e-5, 5e-5]
-  - `warmup_ratio`: uniform in [0.0, 0.2]
-  - `weight_decay`: uniform in [0.0, 0.1]
-  - `per_device_train_batch_size`: categorical {8, 16, 32}
-- **Design:**
-  - 20 trials per model using TPE sampler
-  - Each trial trains on 30% of training data for 3 epochs
-  - Optimises validation Macro F1
-  - Saves best params to `data/processed/best_hyperparams_{model_key}.json`
-  - Trial checkpoints are cleaned up after each trial to save disk space
-- **Functions:**
-  - `create_objective(model_key, ...)` — creates the Optuna objective function
-  - `run_hyperparameter_tuning(model_key, output_dir, n_trials)` — callable from notebooks
-  - `run_all_hyperparameter_tuning(output_dir)` — tunes all models sequentially
-
 ---
 
 ### `src/analysis/disaster_vocab.py`
@@ -263,37 +243,33 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
    Raw HumAID Parquets → Clean text → Deduplicate → Filter to 5 classes
    → Encode labels → Compute class weights → Save processed parquets
 
-2. HYPERPARAMETER TUNING (src/training/hyperparameter_tuning.py) [Optional]
-   For each model: 20 Optuna trials on 30% data × 3 epochs
-   → Save best_hyperparams_{model_key}.json
-
-3. TRANSFORMER TRAINING (src/training/train_model.py)
+2. TRANSFORMER TRAINING (src/training/train_model.py)
    For each of 6 transformers (seed=42):
      Load data → Tokenize → Train with WeightedTrainer + TrainingLossCallback
      → Save val_predictions.npz, test_predictions.npz, training_history.json, best_model/
 
-4. NON-TRANSFORMER TRAINING
+3. NON-TRANSFORMER TRAINING
    CNN: src/analysis/cnn_classifier.py (random embeddings, Conv1d filters)
    BiLSTM: src/analysis/bilstm_classifier.py (GloVe 100d, dot-product attention)
    → Save val_predictions.npz, test_predictions.npz
 
-5. MODEL CHARACTERISATION (src/analysis/model_characterisation.py)
+4. MODEL CHARACTERISATION (src/analysis/model_characterisation.py)
    Classify tweet styles → Compute per-model per-style F1 matrix
    → Attribution-based style verification
 
-6. DYNAMIC ENSEMBLE (src/analysis/dynamic_ensemble.py)
+5. DYNAMIC ENSEMBLE (src/analysis/dynamic_ensemble.py)
    Build meta-features: 8×5 probs + context + confidence gaps + style one-hot
    → Train MLP meta-learner on validation set → Predict on test set
 
-7. SELECTIVE PREDICTION
+6. SELECTIVE PREDICTION
    Novelty 2: sweep per-class thresholds on validation
    Novelty 3: flag unreliable predictions via attribution analysis
    Combined: accept only if BOTH signals agree
 
-8. EVALUATION (src/evaluation/evaluation.py)
+7. EVALUATION (src/evaluation/evaluation.py)
    All plots, tables, statistical tests, training curves
 
-9. DASHBOARD (src/app/crisis_dashboard.py)
+8. DASHBOARD (src/app/crisis_dashboard.py)
    Gradio app for real-time classification with all 8 models
 ```
 
@@ -364,11 +340,6 @@ Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates)
 ### Why Single Seed Instead of Multi-Seed?
 The panel requested removing multi-seed variance reporting. With 8 models, the computational cost of 3 seeds × 8 models = 24 training runs is prohibitive. Single seed (42) is standard in the literature and sufficient for comparing model architectures.
 
-### Why Optuna for Hyperparameter Tuning?
-- **Bayesian optimisation** (TPE) is more sample-efficient than grid/random search
-- **30% data + 3 epochs** keeps trial time manageable (~5-10 min per trial on T4)
-- **20 trials** balances exploration vs. compute budget
-- Per-model tuning allows each architecture to find its optimal configuration
 
 ### Why TextCNN and BiLSTM?
 - Non-transformer baselines provide diversity in the ensemble
@@ -394,8 +365,7 @@ The panel requested removing multi-seed variance reporting. With 8 models, the c
 4. **Why use class-weighted loss?** — Disaster datasets are imbalanced; `not_humanitarian` dominates. Balanced weights ensure minority classes receive proportional attention.
 5. **How does BERTweet differ from other transformers?** — It is a RoBERTa-based model pre-trained on 850 million English tweets (2012–2019). Unlike the other five transformers which are trained on general text (Wikipedia, books, web crawls), BERTweet understands Twitter-specific language patterns — informal grammar, abbreviations, emoticons, and hashtag text. This makes it the only domain-specific model in the ensemble and provides fundamentally different linguistic knowledge. No special tokenisation handling is needed; AutoTokenizer loads its custom fastBPE tokenizer automatically.
 6. **What is XtremeDistil and why include it?** — A 6-layer distilled BERT variant from Microsoft. Tests whether model compression degrades performance on this task.
-7. **How does hyperparameter tuning work?** — Optuna samples from defined ranges using Bayesian optimisation (TPE), trains on 30% data for 3 epochs, and selects the configuration maximising validation Macro F1.
-8. **Why use training_history.json?** — Records per-epoch loss curves for visualisation, helping detect overfitting and compare convergence patterns across models.
+7. **Why use training_history.json?** — Records per-epoch loss curves for visualisation, helping detect overfitting and compare convergence patterns across models.
 
 ### Ensemble & Novelties
 9. **What features does the meta-learner use?** — 40 softmax probabilities (8×5), 10 linguistic features, 8 confidence gaps, 4 style one-hot features = ~62 total.
