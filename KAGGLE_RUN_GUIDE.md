@@ -186,7 +186,7 @@ perf_matrix = compute_style_performance_matrix(
     {display_names[k]: val_preds[k] for k in display_names},
     val_style_labels,
     list(display_names.values()),
-    save_dir=config.DATA_DIR,
+    save_dir=os.path.join(RESULTS_DIR, "model_style"),
 )
 
 EVAL_DIR = os.path.join(RESULTS_DIR, "evaluation_results")
@@ -288,6 +288,9 @@ print(f"  F1 improvement: +{selective_results['macro_f1'] - full_f1:.4f}")
 ## Cell 9 — Novelty 3: Attribution-Based Reliability Filter
 
 ```python
+import subprocess
+subprocess.run(["pip", "install", "-q", "captum"], check=True)
+
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 from attribution_filter import compute_attributions_for_batch, flag_unreliable_predictions, combined_abstention
@@ -351,8 +354,7 @@ run_full_evaluation(
     class_names=class_names,
     output_dir=EVAL_DIR,
     model_output_dir=OUTPUT_DIR,
-    style_performance_path=os.path.join(config.DATA_DIR, "model_style_performance.json"),
-)
+    style_performance_path=os.path.join(RESULTS_DIR, "model_style", "model_style_performance.json"),
 ```
 
 ---
