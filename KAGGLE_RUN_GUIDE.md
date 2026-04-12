@@ -1,382 +1,188 @@
 # Kaggle Run Guide — Disaster Decision Support Pipeline
 
-> **Every code cell below imports and calls functions from the existing project files.**
+> **Every code cell imports and calls functions from the existing project files.**
 > No code is duplicated or rewritten — all logic lives in `src/`.
 
 ---
 
 ## Prerequisites
 
-- Create a Kaggle notebook with **GPU T4 x2** accelerator
-- Add your dataset: `karthiksekar1821/humaid` (contains `train.parquet`, `val.parquet`, `test.parquet`)
-- Add saved output as input: mount the previous notebook output at `/kaggle/input/main-project/`
-- Clone the GitHub repo
+1. **Create a Kaggle notebook** with **GPU T4 x2** accelerator
+2. **Add your dataset**: `karthiksekar1821/humaid` — contains the raw `train.parquet`, `val.parquet`, `test.parquet`
+3. **Add saved notebook output as input**:
+   - Click **Add Input** → **Notebook Output**
+   - Search for `main-project` (your training notebook)
+   - This mounts the trained model outputs at `/kaggle/input/notebooks/karthiksekar1821/main-project/`
+4. The notebook will clone the GitHub repo automatically in Cell 1
 
 ---
 
-## Cell 1 — Clone Repo & Install Dependencies
+## Important Path Information
 
-```python
-import subprocess, os
+| Variable | Path | Contents |
+|----------|------|----------|
+| `BASE_INPUT` | `/kaggle/input/notebooks/karthiksekar1821/main-project` | Saved notebook output root |
+| `OUTPUT_DIR` | `{BASE_INPUT}/output` | All trained model checkpoints and predictions |
+| `DATA_DIR` | `/kaggle/input/datasets/karthiksekar1821/humaid` | Raw HumAID parquet files |
+| `PROCESSED_DIR` | `{BASE_INPUT}/disaster_decision_support/data/processed` | Processed parquets (cleaned text, 5 classes, label mapping) |
+| `RESULTS_DIR` | `/kaggle/working/results` | All evaluation outputs (writable) |
 
-if not os.path.exists("/kaggle/working/disaster_decision_support"):
-    subprocess.run([
-        "git", "clone",
-        "https://github.com/YOUR_USERNAME/disaster_decision_support.git",
-        "/kaggle/working/disaster_decision_support"
-    ], check=True)
+### Model Checkpoint Paths
 
-print("✅ Setup complete.")
+Transformer models are saved at:
 ```
+{OUTPUT_DIR}/{model_key}/seed_42/best_model/
+```
+or (for CNN/BiLSTM):
+```
+{OUTPUT_DIR}/{model_key}/best_model/
+```
+
+The `load_predictions` function in Cell 3 automatically checks both `seed_42` and non-seed paths.
 
 ---
 
-## Cell 2 — Configure Paths for Kaggle
+## Notebook Structure — 9 Cells
 
-```python
-import os, sys
+### Cell 1 — Clone Repo & Install Dependencies
 
-# Paths
-OUTPUT_DIR  = "/kaggle/input/notebooks/karthiksekar1821/main-project/output"
-RESULTS_DIR = "/kaggle/working/results"
-DATA_DIR    = "/kaggle/input/datasets/karthiksekar1821/humaid"
+Clones the GitHub repository and installs `gradio` and `joblib`. Does **NOT** install `captum` here (installed in Cell 7 to avoid numpy binary incompatibility).
 
-os.makedirs(RESULTS_DIR, exist_ok=True)
+**Must always run first.**
 
-# Add project to path
-sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/training")
-sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/analysis")
-sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/evaluation")
-sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/data")
-sys.path.insert(0, "/kaggle/working/disaster_decision_support/src/app")
+### Cell 2 — Configure All Paths
 
-print("OUTPUT_DIR:", OUTPUT_DIR)
-print("RESULTS_DIR:", RESULTS_DIR)
-print("DATA_DIR:", DATA_DIR)
-```
+Defines `BASE_INPUT`, `OUTPUT_DIR`, `DATA_DIR`, `PROCESSED_DIR`, `RESULTS_DIR` and adds all `src/` directories to `sys.path`. Creates `RESULTS_DIR`.
 
----
+**Must always run second.**
 
-## Cell 3 — Train All Six Transformer Models (seed=42)
+### Cell 3 — Load All Predictions + Train Texts
 
-```python
-from train_model import train_single_model
+- Defines `load_predictions()` which checks both `seed_42` and non-seed paths
+- Loads val and test predictions from all 8 models
+- Loads train/val/test texts from **processed** parquet files (cleaned text, 5 classes only)
+- Defines `class_names`, `train_labels`, `val_labels`, `test_labels`
 
-for model_key in ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil"]:
-    result = train_single_model(model_key, seed=42, output_dir=OUTPUT_DIR)
-    print(f"✅ {model_key} done — Test F1: {result['test_metrics']['eval_macro_f1']:.4f}")
-```
+### Cell 4 — Model Characterisation (Tweet Styles)
 
----
+- Classifies all val/test tweets into 4 styles (URGENT, FORMAL, EYEWITNESS, INFORMATIONAL)
+- Computes per-model per-style Macro F1 performance matrix
+- Saves style heatmap to `RESULTS_DIR/evaluation_results/`
 
-## Cell 4 — Train Non-Transformer Models
+### Cell 5 — Dynamic Ensemble (Novelty 1)
 
-```python
-import numpy as np
-from datasets import load_dataset
+- Trains MLP meta-learner on validation set using softmax probabilities + context features + style features + confidence gaps
+- Predicts on test set
+- Evaluates and reports ensemble Macro F1
+- Saves meta-learner, scaler, and predictions to `RESULTS_DIR/ensemble/`
 
-# Install captum here (after transformer training) to avoid numpy
-# binary incompatibility that would require a kernel restart.
-subprocess.run(["pip", "install", "-q", "captum"], check=True)
+### Cell 6 — Novelty 2: Class-Adaptive Confidence Thresholds
 
-dataset = load_dataset("parquet", data_files={
-    "train":      config.TRAIN_FILE,
-    "validation": config.VAL_FILE,
-    "test":       config.TEST_FILE,
-})
+- Sweeps per-class thresholds on validation set
+- Applies thresholds to test set for selective prediction
+- Reports coverage, selective Macro F1, and F1 improvement
+- Saves results to `RESULTS_DIR/confidence_results/`
 
-train_texts  = dataset["train"]["tweet_text"]
-val_texts    = dataset["validation"]["tweet_text"]
-test_texts   = dataset["test"]["tweet_text"]
-train_labels = np.array(dataset["train"]["label"])
-val_labels   = np.array(dataset["validation"]["label"])
-test_labels  = np.array(dataset["test"]["label"])
+### Cell 7 — Novelty 3: Attribution Filter
 
-import torch
-weights_path = os.path.join(config.DATA_DIR, "class_weights.pt")
-class_weights = torch.load(weights_path).tolist()
+- **Installs captum at the very top** (must stay here permanently)
+- Loads RoBERTa model for Integrated Gradients attribution computation
+- Computes attributions for up to 500 test samples
+- Flags unreliable predictions (high confidence but irrelevant attributions)
+- Combines with Novelty 2 for dual-signal abstention
 
-# Train CNN
-from cnn_classifier import train_cnn
-cnn_model, cnn_vocab, cnn_results = train_cnn(
-    train_texts, train_labels, val_texts, val_labels,
-    test_texts, test_labels, OUTPUT_DIR, class_weights,
-)
+### Cell 8 — Comprehensive Evaluation Report
 
-# Train BiLSTM
-from bilstm_classifier import train_bilstm
-bilstm_model, bilstm_vocab, bilstm_results = train_bilstm(
-    train_texts, train_labels, val_texts, val_labels,
-    test_texts, test_labels, OUTPUT_DIR, class_weights,
-)
-```
+- Runs full evaluation: individual model results, baselines (TF-IDF+SVM, majority class), ensemble, selective prediction, McNemar's test
+- Generates all plots: confusion matrices, per-class F1 bars, macro F1 summary, training curves, calibration diagram, confidence distributions, style heatmap
+- All PNG plots saved to `RESULTS_DIR/evaluation_results/`
+- All JSON results saved to `RESULTS_DIR/`
+
+### Cell 9 — Launch Gradio Dashboard
+
+- Creates and launches the crisis dashboard using all loaded models
+- Uses models from `OUTPUT_DIR`, label mapping from `PROCESSED_DIR`, and ensemble artifacts from `RESULTS_DIR/ensemble/`
+- Dashboard provides real-time tweet classification with all 8 models
 
 ---
 
-## Cell 5 — Load All Predictions
+## Execution Order
 
-```python
-import numpy as np, json, pandas as pd
+1. **Cell 1** — Clone + install (run once)
+2. **Cell 2** — Configure paths (run once)
+3. **Cells 3–8** — Run in order, skip none
+4. **Cell 9** — Launch dashboard (optional, run last)
 
-def load_predictions(model_key, split="test"):
-    path_with_seed    = f"{OUTPUT_DIR}/{model_key}/seed_42/predictions/{split}_predictions.npz"
-    path_without_seed = f"{OUTPUT_DIR}/{model_key}/predictions/{split}_predictions.npz"
-
-    if os.path.exists(path_with_seed):
-        data = np.load(path_with_seed)
-    elif os.path.exists(path_without_seed):
-        data = np.load(path_without_seed)
-    else:
-        raise FileNotFoundError(
-            f"No predictions found for {model_key} ({split})\n"
-            f"  Checked: {path_with_seed}\n"
-            f"  Checked: {path_without_seed}"
-        )
-    return {"preds": data["preds"], "labels": data["labels"], "probs": data["probs"]}
-
-# Load predictions from all 8 models
-model_keys = ["roberta", "deberta", "electra", "bert", "bertweet", "xtremedistil", "cnn", "bilstm"]
-val_preds = {k: load_predictions(k, "val") for k in model_keys}
-test_preds = {k: load_predictions(k, "test") for k in model_keys}
-
-# Load tweet texts
-val_df   = pd.read_parquet(f"{DATA_DIR}/val.parquet")
-test_df  = pd.read_parquet(f"{DATA_DIR}/test.parquet")
-
-val_texts  = val_df["tweet_text"].tolist()[:len(val_preds["roberta"]["preds"])]
-test_texts = test_df["tweet_text"].tolist()[:len(test_preds["roberta"]["preds"])]
-
-# Extract labels and class names
-test_labels = test_preds["roberta"]["labels"]
-val_labels  = val_preds["roberta"]["labels"]
-class_names = [
-    "infrastructure_and_utility_damage",
-    "injured_or_dead_people",
-    "not_humanitarian",
-    "other_relevant_information",
-    "rescue_volunteering_or_donation_effort",
-]
-
-print(f"val_texts loaded: {len(val_texts)}")
-print(f"test_texts loaded: {len(test_texts)}")
-print(f"test_labels shape: {test_labels.shape}")
-print(f"class_names: {class_names}")
-```
+> **Important:** Do NOT skip cells or run them out of order. Each cell depends on variables defined in previous cells.
 
 ---
 
-## Cell 6 — Model Characterisation (Tweet Styles)
+## Interpreting Results
 
-```python
-from model_characterisation import (
-    classify_tweets_batch, compute_style_performance_matrix,
-    plot_style_performance_heatmap,
-)
+### Key Metrics
 
-# Classify tweet styles
-val_style_labels, _ = classify_tweets_batch(val_texts)
-test_style_labels, _ = classify_tweets_batch(test_texts)
+| Metric | Expected Value | Meaning |
+|--------|---------------|---------|
+| Ensemble Macro F1 | ~0.8166 | Dynamic ensemble performance on test set |
+| Selective Macro F1 | ~0.8773 | F1 on accepted predictions (Novelty 2) |
+| Selective Coverage | ~61.6% | Percentage of predictions accepted (rest abstained) |
+| Combined Macro F1 | ~0.8771 | F1 with both confidence + attribution filters |
+| Combined Coverage | ~59.3% | Coverage with dual-signal abstention |
+| TF-IDF+SVM Baseline | ~0.76 | Traditional ML baseline for comparison |
 
-# Compute style performance matrix (for transformers)
-display_names = {
-    "roberta": "RoBERTa", "deberta": "DeBERTa", "electra": "ELECTRA",
-    "bert": "BERT", "bertweet": "BERTweet", "xtremedistil": "XtremeDistil",
-}
-perf_matrix = compute_style_performance_matrix(
-    {display_names[k]: val_preds[k] for k in display_names},
-    val_style_labels,
-    list(display_names.values()),
-    save_dir=os.path.join(RESULTS_DIR, "model_style"),
-)
+### Plots Generated (in `RESULTS_DIR/evaluation_results/`)
 
-EVAL_DIR = os.path.join(RESULTS_DIR, "evaluation_results")
-os.makedirs(EVAL_DIR, exist_ok=True)
-plot_style_performance_heatmap(
-    perf_matrix, list(display_names.values()),
-    save_path=os.path.join(EVAL_DIR, "model_style_heatmap.png"),
-)
-```
+| File | Description |
+|------|-------------|
+| `macro_f1_summary.png` | Bar chart comparing all models + baselines + ensemble |
+| `per_class_f1_comparison.png` | Per-class F1 across all models |
+| `confusion_matrix_*.png` | Confusion matrices for each model |
+| `ensemble_confusion_matrix.png` | Ensemble confusion matrix |
+| `calibration_diagram.png` | Reliability/calibration plot |
+| `confidence_distributions.png` | Per-model confidence histograms |
+| `model_style_heatmap.png` | Model × tweet style performance matrix |
+| `training_curves_*.png` | Training loss/F1 curves per model |
 
 ---
 
-## Cell 7 — Dynamic Ensemble (8 Models + Style Features)
+## Common Errors and Fixes
 
-```python
-from dynamic_ensemble import (
-    train_meta_learner, predict_with_dynamic_ensemble,
-    evaluate_dynamic_ensemble, save_ensemble_artifacts,
-)
+### Error: `FileNotFoundError: No predictions found for {model_key}`
 
-# Build probability lists (ordered)
-val_probs_list  = [val_preds[k]["probs"]  for k in model_keys]
-test_probs_list = [test_preds[k]["probs"] for k in model_keys]
+**Cause:** The model predictions are not in the expected path.
 
-# Train meta-learner with style features
-meta_learner, scaler, feature_names = train_meta_learner(
-    val_model_probs_list=val_probs_list,
-    val_labels=val_preds["roberta"]["labels"],
-    val_tweet_texts=val_texts,
-    val_style_labels=val_style_labels,
-    meta_learner_type="mlp",
-)
-
-# Predict on test set
-ensemble_probs, ensemble_preds = predict_with_dynamic_ensemble(
-    meta_learner, scaler, test_probs_list, test_texts,
-    test_style_labels=test_style_labels,
-)
-
-ensemble_metrics = evaluate_dynamic_ensemble(
-    ensemble_preds, ensemble_probs, test_labels, class_names,
-)
-
-ENSEMBLE_DIR = os.path.join(RESULTS_DIR, "ensemble")
-save_ensemble_artifacts(
-    meta_learner, scaler, ensemble_probs, ensemble_preds,
-    test_labels, ENSEMBLE_DIR,
-)
+**Fix:** Check that you've added the correct notebook output as input. The predictions should be at:
+```
+/kaggle/input/notebooks/karthiksekar1821/main-project/output/{model_key}/seed_42/predictions/
+```
+or:
+```
+/kaggle/input/notebooks/karthiksekar1821/main-project/output/{model_key}/predictions/
 ```
 
----
+### Error: `ModuleNotFoundError: No module named 'xxx'`
 
-## Cell 8 — Novelty 2: Class-Adaptive Confidence Thresholds
+**Cause:** Cell 2 was not run, or `sys.path` was not configured.
 
-```python
-from adaptive_confidence import sweep_per_class_thresholds, apply_per_class_thresholds
+**Fix:** Run Cell 2 first — it adds all `src/` directories to `sys.path`.
 
-val_ensemble_probs, val_ensemble_preds = predict_with_dynamic_ensemble(
-    meta_learner, scaler, val_probs_list, val_texts,
-    test_style_labels=val_style_labels,
-)
+### Error: `captum` import fails
 
-# Sweep thresholds on validation set
-per_class_thresholds = sweep_per_class_thresholds(
-    ensemble_probs=val_ensemble_probs,
-    ensemble_preds=val_ensemble_preds,
-    true_labels=val_labels,
-    class_names=class_names,
-)
+**Cause:** captum is not installed yet (it's installed in Cell 7).
 
-print("\nPer-class thresholds:")
-for cls, t in per_class_thresholds.items():
-    print(f"  {cls}: {t:.2f}")
+**Fix:** Make sure to run Cell 7 before any cell that uses captum. Cell 7 installs it at the top.
 
-# Apply thresholds to test set
-selective_results = apply_per_class_thresholds(
-    ensemble_probs=ensemble_probs,
-    ensemble_preds=ensemble_preds,
-    true_labels=test_labels,
-    per_class_thresholds=per_class_thresholds,
-    class_names=class_names,
-)
+### Error: SVM baseline returning very low F1 (~0.20)
 
-confidence_accepted_mask = selective_results["accepted_mask"]
+**Cause:** This was a known bug where uncleaned raw texts were passed to the SVM. It has been fixed — the SVM function now internally cleans texts.
 
-# Report
-from sklearn.metrics import f1_score as sk_f1
-full_f1 = sk_f1(test_labels, ensemble_preds, average="macro")
-print(f"\nWithout selective prediction:  Macro F1 = {full_f1:.4f}")
-print(f"With class-adaptive thresholds:")
-print(f"  Coverage:  {selective_results['coverage']:.4f} ({selective_results['accepted_count']}/{selective_results['total']})")
-print(f"  Macro F1:  {selective_results['macro_f1']:.4f}")
-print(f"  Accuracy:  {selective_results['accuracy']:.4f}")
-print(f"  F1 improvement: +{selective_results['macro_f1'] - full_f1:.4f}")
-```
+**Fix:** Make sure you're using the latest version of `evaluation.py` from the repository.
 
----
+### Error: `No models produced predictions` in dashboard
 
-## Cell 9 — Novelty 3: Attribution-Based Reliability Filter
+**Cause:** Model paths are incorrect or models failed to load.
 
-```python
-import subprocess
-subprocess.run(["pip", "install", "-q", "captum"], check=True)
-
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-from attribution_filter import compute_attributions_for_batch, flag_unreliable_predictions, combined_abstention
-
-# Load RoBERTa from saved output (try seed_42 path first)
-roberta_path = f"{OUTPUT_DIR}/roberta/seed_42/best_model"
-if not os.path.exists(roberta_path):
-    roberta_path = f"{OUTPUT_DIR}/roberta/best_model"
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-tokenizer = AutoTokenizer.from_pretrained(roberta_path)
-model = AutoModelForSequenceClassification.from_pretrained(roberta_path)
-model.to(device).eval()
-
-N_SAMPLES = min(500, len(test_texts))
-attribution_results = compute_attributions_for_batch(
-    model=model, tokenizer=tokenizer,
-    texts=test_texts[:N_SAMPLES],
-    predicted_classes=ensemble_preds[:N_SAMPLES],
-    device=device, n_steps=50,
-)
-
-reliability_mask_subset, reliability_details = flag_unreliable_predictions(
-    attribution_results=attribution_results,
-    probs=ensemble_probs[:N_SAMPLES], preds=ensemble_preds[:N_SAMPLES],
-    class_names=class_names, per_class_thresholds=per_class_thresholds,
-)
-
-reliability_mask = np.ones(len(test_labels), dtype=bool)
-reliability_mask[:N_SAMPLES] = reliability_mask_subset
-
-combined_mask, combined_results = combined_abstention(
-    confidence_accepted_mask=confidence_accepted_mask,
-    reliability_mask=reliability_mask,
-    preds=ensemble_preds, labels=test_labels, class_names=class_names,
-)
-```
-
----
-
-## Cell 10 — Full Evaluation Report
-
-```python
-from evaluation import run_full_evaluation
-
-display_names_all = {
-    "roberta": "RoBERTa", "deberta": "DeBERTa", "electra": "ELECTRA",
-    "bert": "BERT", "bertweet": "BERTweet", "xtremedistil": "XtremeDistil",
-    "cnn": "CNN", "bilstm": "BiLSTM",
-}
-model_test_results = {display_names_all[k]: test_preds[k] for k in model_keys}
-ensemble_test_results = {"preds": ensemble_preds, "labels": test_labels, "probs": ensemble_probs}
-
-run_full_evaluation(
-    model_test_results=model_test_results,
-    ensemble_test_results=ensemble_test_results,
-    selective_results=selective_results,
-    combined_results=combined_results,
-    train_texts=train_texts, train_labels=train_labels,
-    test_texts=test_texts, test_labels=test_labels,
-    class_names=class_names,
-    output_dir=EVAL_DIR,
-    model_output_dir=OUTPUT_DIR,
-    style_performance_path=os.path.join(RESULTS_DIR, "model_style", "model_style_performance.json"),
-```
-
----
-
-## Cell 11 — Save Final Models
-
-```python
-import shutil
-
-FINAL_DIR = os.path.join(RESULTS_DIR, "final_models")
-for model_key in model_keys:
-    # Try seed_42 path first
-    src = f"{OUTPUT_DIR}/{model_key}/seed_42/best_model"
-    if not os.path.exists(src):
-        src = f"{OUTPUT_DIR}/{model_key}/best_model"
-    dst = f"{FINAL_DIR}/{model_key}/best_model"
-    if os.path.exists(src):
-        shutil.copytree(src, dst, dirs_exist_ok=True)
-        print(f"✅ Saved {model_key} → {dst}")
-
-print(f"\n✅ All done! Results saved to {RESULTS_DIR}")
-```
+**Fix:** Check the startup print statements in Cell 9 — they show all paths being searched and which models loaded successfully.
 
 ---
 

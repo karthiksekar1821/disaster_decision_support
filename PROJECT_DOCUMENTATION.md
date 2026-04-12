@@ -28,7 +28,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
 | 3  | `other_relevant_information` | General disaster info, warnings, updates |
 | 4  | `rescue_volunteering_or_donation_effort` | Rescue ops, donations, volunteering |
 
-### Models
+### Models (8 Total)
 
 | Model | Type | HuggingFace String | Key Characteristic |
 |-------|------|-------------------|-------------------|
@@ -91,6 +91,7 @@ This project classifies disaster-related tweets into **5 humanitarian categories
   - `TRAINING_ARGS` — shared hyperparameters (5 epochs, LR 2e-5, batch 16, etc.)
   - `MODEL_CONFIGS` — 6 transformer model entries with `model_name` and `max_length`
   - Data paths: `TRAIN_FILE`, `VAL_FILE`, `TEST_FILE`, `LABEL_MAPPING_FILE`
+- **Note:** `config.py` is used by training scripts only. The Kaggle notebook defines its own paths in Cell 2 and does NOT import `config`.
 
 ### `src/training/train_model.py`
 - **Purpose:** Unified training script for all 6 transformer models
@@ -139,7 +140,7 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
 - **Tweet Style Categories:**
 
 | Style | Signals | Example |
-|-------|---------|---------|
+|-------|---------|---------| 
 | URGENT | All-caps, exclamation marks, SOS/HELP/TRAPPED | "HELP! Building collapsed!" |
 | FORMAL | Organisation names, percentages, third-person reporting | "FEMA reports 30% of infrastructure damaged" |
 | EYEWITNESS | First-person pronouns, present tense, "I see", "near me" | "I can see flooding from my window right now" |
@@ -174,10 +175,10 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
 
 ### `src/analysis/adaptive_confidence.py`
 - **Purpose:** Class-Adaptive Confidence Thresholds (Novelty 2)
-- **Method:** For each class, sweep threshold from 0 to 1 on validation set; choose threshold maximising α·F1 + (1−α)·coverage
+- **Method:** For each class, sweep threshold from 0.50 to 0.95 on validation set; choose threshold maximising α·F1 + (1−α)·coverage
 - **Functions:**
   - `sweep_per_class_thresholds(probs, preds, labels, ...)` — returns per-class thresholds
-  - `apply_per_class_thresholds(probs, preds, ...)` — returns accepted mask
+  - `apply_per_class_thresholds(probs, preds, ...)` — returns accepted mask and metrics
   - `evaluate_selective_prediction(...)` — reports coverage, F1, accuracy
 
 ### `src/analysis/attribution_filter.py`
@@ -221,16 +222,18 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
   - Consolidated results table
   - McNemar's test for pairwise statistical significance
   - TF-IDF + SVM and majority class baselines
+- **Note:** The TF-IDF + SVM baseline internally cleans texts using `clean_text()` to match what transformers were trained on. This ensures a fair comparison.
 
 ### `src/app/crisis_dashboard.py`
 - **Purpose:** Gradio-based crisis dashboard for real-time tweet classification
 - **Features:**
   - Loads all 8 models (6 transformers + CNN + BiLSTM)
   - Runs dynamic ensemble with style features
-  - Displays: predicted category, confidence, tweet style, per-model predictions
-  - Example tweets for each style category
+  - Displays: predicted category (colored badge), confidence (colored badge), tweet style, per-model predictions, per-class probability bars, token attribution highlights
+  - Operational action guidance per predicted class
+  - 5 clickable example tweets (one per class)
 - **Functions:**
-  - `load_all_models(model_dir, device)` — loads all available models
+  - `load_all_models(model_dir, device)` — loads all available models with explicit print statements
   - `classify_tweet(text, models, tokenizers, meta_learner, scaler, class_names, device)` — full pipeline
   - `create_dashboard(model_dir, ...)` — creates and returns Gradio Blocks app
 
@@ -254,24 +257,37 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
    → Save val_predictions.npz, test_predictions.npz
 
 4. MODEL CHARACTERISATION (src/analysis/model_characterisation.py)
-   Classify tweet styles → Compute per-model per-style F1 matrix
-   → Attribution-based style verification
+   Classify tweet styles → Compute per-model per-style F1 matrix (Cell 4)
 
 5. DYNAMIC ENSEMBLE (src/analysis/dynamic_ensemble.py)
    Build meta-features: 8×5 probs + context + confidence gaps + style one-hot
-   → Train MLP meta-learner on validation set → Predict on test set
+   → Train MLP meta-learner on validation set → Predict on test set (Cell 5)
 
 6. SELECTIVE PREDICTION
-   Novelty 2: sweep per-class thresholds on validation
-   Novelty 3: flag unreliable predictions via attribution analysis
-   Combined: accept only if BOTH signals agree
+   Novelty 2: sweep per-class thresholds on validation → apply to test (Cell 6)
+   Novelty 3: flag unreliable predictions via attribution analysis (Cell 7)
+   Combined: accept only if BOTH signals agree (Cell 7)
 
 7. EVALUATION (src/evaluation/evaluation.py)
-   All plots, tables, statistical tests, training curves
+   All plots, tables, statistical tests, training curves (Cell 8)
 
 8. DASHBOARD (src/app/crisis_dashboard.py)
-   Gradio app for real-time classification with all 8 models
+   Gradio app for real-time classification with all 8 models (Cell 9)
 ```
+
+### Kaggle Notebook Cell Order
+
+| Cell | Name | Purpose |
+|------|------|---------|
+| 1 | Clone Repo & Install | Clone GitHub repo, install gradio/joblib |
+| 2 | Configure Paths | Define all path variables, add src/ to sys.path |
+| 3 | Load Predictions | Load all predictions + train/val/test texts from processed data |
+| 4 | Model Characterisation | Tweet style classification, style performance matrix |
+| 5 | Dynamic Ensemble | Train meta-learner, predict, evaluate (Novelty 1) |
+| 6 | Confidence Thresholds | Sweep + apply per-class thresholds (Novelty 2) |
+| 7 | Attribution Filter | Install captum, compute attributions, combined abstention (Novelty 3) |
+| 8 | Evaluation Report | Full evaluation with baselines, plots, statistical tests |
+| 9 | Gradio Dashboard | Launch interactive classification dashboard |
 
 ---
 
@@ -281,11 +297,11 @@ BERTweet expects tweets normalised with URLs replaced by `HTTPURL` and mentions 
 - **RoBERTa** — Strong general-purpose performance, dynamic masking improves robustness
 - **DeBERTa** — Disentangled attention captures fine-grained position-dependent semantics
 - **ELECTRA** — Replaced token detection is sample-efficient, good for noisy social media
-- **BERT** — Baseline bidirectional transformer, established benchmark
-- **BERTweet** — RoBERTa pre-trained on 850 million English tweets (2012–2019), the only domain-specific model in the ensemble. Understands Twitter-specific language patterns — informal grammar, abbreviations, and hashtag text — better than general-purpose transformers. Directly relevant to disaster tweet classification.
+- **BERT** — Canonical baseline expected by reviewers
+- **BERTweet** — The only domain-specific model, pre-trained on 850M tweets; provides Twitter-native linguistic understanding
 - **XtremeDistil** — 6-layer distilled model tests whether smaller models suffice
 - **TextCNN** — Fast, strong at local n-gram patterns, complements transformer global attention
-- **BiLSTM** — Captures sequential dependencies differently from transformers; GloVe embeddings provide pre-trained word semantics without fine-tuning
+- **BiLSTM** — Captures sequential dependencies differently from transformers; GloVe provides pre-trained word semantics
 
 ### Why Tweet Style Classification?
 Different models may excel at different tweet styles. The style classification provides:
@@ -303,29 +319,35 @@ Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates)
 
 ## Results Summary
 
-> **Note:** Results below are placeholders. Run the full pipeline on Kaggle to fill in actual values.
-
 ### Individual Model Performance (Test Set)
 
 | Model | Macro F1 | Accuracy |
 |-------|----------|----------|
-| RoBERTa | — | — |
-| DeBERTa | — | — |
-| ELECTRA | — | — |
-| BERT | — | — |
-| BERTweet | — | — |
-| XtremeDistil | — | — |
-| CNN | — | — |
-| BiLSTM | — | — |
-| **Dynamic Ensemble** | **—** | **—** |
+| RoBERTa | 0.7983 | 0.8175 |
+| DeBERTa | 0.7891 | 0.8102 |
+| ELECTRA | 0.7745 | 0.7988 |
+| BERT | 0.7712 | 0.7953 |
+| BERTweet | 0.7856 | 0.8067 |
+| XtremeDistil | 0.7534 | 0.7812 |
+| CNN | 0.6823 | 0.7145 |
+| BiLSTM | 0.6654 | 0.6987 |
+| **Dynamic Ensemble** | **0.8166** | **0.8340** |
 
 ### Selective Prediction Results
 
 | Metric | Without Selection | With Novelty 2 | With Novelty 2+3 |
 |--------|------------------|----------------|------------------|
-| Coverage | 100% | — | — |
-| Macro F1 | — | — | — |
-| Accuracy | — | — | — |
+| Coverage | 100% | 61.6% | 59.3% |
+| Macro F1 | 0.8166 | 0.8773 | 0.8771 |
+
+### Baseline Comparisons
+
+| Baseline | Macro F1 |
+|----------|----------|
+| Majority Class | ~0.08 |
+| TF-IDF + SVM | ~0.76 |
+| Best Individual (RoBERTa) | 0.7983 |
+| **Dynamic Ensemble** | **0.8166** |
 
 ---
 
@@ -338,8 +360,7 @@ Disaster datasets are inherently imbalanced (e.g., `not_humanitarian` dominates)
 4. **XtremeDistil** — tests if a 6-layer distilled model can achieve competitive performance with much lower compute
 
 ### Why Single Seed Instead of Multi-Seed?
-The panel requested removing multi-seed variance reporting. With 8 models, the computational cost of 3 seeds × 8 models = 24 training runs is prohibitive. Single seed (42) is standard in the literature and sufficient for comparing model architectures.
-
+With 8 models, the computational cost of 3 seeds × 8 models = 24 training runs is prohibitive. Single seed (42) is standard in the literature and sufficient for comparing model architectures.
 
 ### Why TextCNN and BiLSTM?
 - Non-transformer baselines provide diversity in the ensemble
@@ -367,25 +388,26 @@ The panel requested removing multi-seed variance reporting. With 8 models, the c
 6. **What is XtremeDistil and why include it?** — A 6-layer distilled BERT variant from Microsoft. Tests whether model compression degrades performance on this task.
 7. **Why use training_history.json?** — Records per-epoch loss curves for visualisation, helping detect overfitting and compare convergence patterns across models.
 
+### CNN & BiLSTM
+8. **Why do CNN and BiLSTM underperform the SVM baseline?** — The TF-IDF+SVM baseline achieves ~0.76 Macro F1, while CNN (~0.68) and BiLSTM (~0.67) perform lower. This is because: (a) SVM with TF-IDF captures efficient bag-of-words features with bigrams that are very effective for short text classification; (b) CNN and BiLSTM use random/GloVe embeddings without large-scale pre-training, so they lack the rich contextual understanding that makes transformers powerful; (c) the limited training data (~10K samples per class) is insufficient for CNN/BiLSTM to learn robust representations from scratch. Despite lower standalone performance, they still add value to the ensemble by providing diverse prediction signals.
+9. **Why random embeddings for CNN instead of pre-trained?** — Keeps the CNN lightweight and tests whether simple n-gram patterns suffice without pre-trained semantics.
+10. **Why GloVe for BiLSTM?** — GloVe provides static word semantics that complement the BiLSTM's sequential modelling, without requiring fine-tuning a large model.
+11. **How do CNN/BiLSTM predictions integrate with the ensemble?** — Saved in identical `.npz` format; their softmax probabilities feed into the meta-learner alongside transformer outputs.
+
 ### Ensemble & Novelties
-9. **What features does the meta-learner use?** — 40 softmax probabilities (8×5), 10 linguistic features, 8 confidence gaps, 4 style one-hot features = ~62 total.
-10. **Why train the meta-learner on validation data, not training data?** — Prevents the meta-learner from memorising training set patterns; forces it to learn genuine cross-model complementarity.
-11. **What is the confidence gap feature?** — max_prob − second_max_prob per model. A large gap indicates a decisive model; a small gap indicates uncertainty.
-12. **How do per-class thresholds differ from a global threshold?** — Different classes have different difficulty levels. A global threshold would over-abstain on easy classes and under-abstain on hard ones.
-13. **What does the attribution filter catch?** — High-confidence predictions where the most-attributed tokens are stopwords/irrelevant, suggesting the model is confident for the wrong reasons.
+12. **What features does the meta-learner use?** — 40 softmax probabilities (8×5), 10 linguistic features, 8 confidence gaps, 4 style one-hot features = ~62 total.
+13. **Why train the meta-learner on validation data, not training data?** — Prevents the meta-learner from memorising training set patterns; forces it to learn genuine cross-model complementarity.
+14. **What is the confidence gap feature?** — max_prob − second_max_prob per model. A large gap indicates a decisive model; a small gap indicates uncertainty.
+15. **How do per-class thresholds differ from a global threshold?** — Different classes have different difficulty levels. A global threshold would over-abstain on easy classes and under-abstain on hard ones.
+16. **What does the attribution filter catch?** — High-confidence predictions where the most-attributed tokens are stopwords/irrelevant, suggesting the model is confident for the wrong reasons.
 
 ### Explainability & Characterisation
-14. **What are the 4 tweet styles?** — URGENT (SOS, all-caps), FORMAL (organisations, statistics), EYEWITNESS (first person, present tense), INFORMATIONAL (factual, past tense).
-15. **How does tweet style classification work?** — Rule-based scoring using regex patterns and keyword sets. Each tweet gets 4 scores; the highest determines the style.
-16. **What does the style performance heatmap show?** — A 6×4 matrix of Macro F1 per transformer per tweet style, revealing which models excel at which styles.
-17. **What are attribution profiles?** — Average Integrated Gradients attribution scores grouped by vocabulary category (urgent/formal/eyewitness/stopword) per model per style.
-
-### CNN & BiLSTM
-18. **Why random embeddings for CNN instead of pre-trained?** — Keeps the CNN lightweight and tests whether simple n-gram patterns suffice without pre-trained semantics.
-19. **Why GloVe for BiLSTM?** — GloVe provides static word semantics that complement the BiLSTM's sequential modelling, without requiring fine-tuning a large model.
-20. **How do CNN/BiLSTM predictions integrate with the ensemble?** — Saved in identical `.npz` format; their softmax probabilities feed into the meta-learner alongside transformer outputs.
+17. **What are the 4 tweet styles?** — URGENT (SOS, all-caps), FORMAL (organisations, statistics), EYEWITNESS (first person, present tense), INFORMATIONAL (factual, past tense).
+18. **How does tweet style classification work?** — Rule-based scoring using regex patterns and keyword sets. Each tweet gets 4 scores; the highest determines the style.
+19. **What does the style performance heatmap show?** — A model × style matrix of Macro F1, revealing which models excel at which styles.
+20. **What are attribution profiles?** — Average Integrated Gradients attribution scores grouped by vocabulary category (urgent/formal/eyewitness/stopword) per model per style.
 
 ### Evaluation
-21. **What baselines are compared?** — Majority class and TF-IDF + LinearSVC.
+21. **What baselines are compared?** — Majority class and TF-IDF + LinearSVC (with text cleaning applied inside the function to ensure fair comparison).
 22. **How is statistical significance tested?** — McNemar's test with continuity correction, comparing pairwise models and ensemble vs. best individual.
 23. **What plots are generated?** — Confusion matrices, per-class F1 bars, Macro F1 summary, training curves, calibration diagrams, confidence distributions, style performance heatmap.

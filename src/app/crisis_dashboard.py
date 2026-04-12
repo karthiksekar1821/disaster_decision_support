@@ -36,12 +36,29 @@ DISPLAY_NAMES = {
 
 # Operational guidance per predicted class
 CLASS_GUIDANCE = {
-    "infrastructure_and_utility_damage": "🏗️ Dispatch structural assessment teams. Check road, bridge, and utility status.",
-    "injured_or_dead_people": "🚑 Deploy medical response teams immediately. Activate casualty management protocol.",
-    "not_humanitarian": "ℹ️ No humanitarian action required. Monitor for updates.",
-    "other_relevant_information": "📋 Log for situational awareness. Share with coordination teams.",
-    "rescue_volunteering_or_donation_effort": "🤝 Coordinate with volunteer groups. Activate donation logistics pipeline.",
+    "infrastructure_and_utility_damage": "🏗️ Deploy engineering and utility restoration teams",
+    "injured_or_dead_people": "🚑 Deploy medical response teams immediately",
+    "not_humanitarian": "ℹ️ No immediate action required",
+    "other_relevant_information": "📋 Monitor and log for situational awareness",
+    "rescue_volunteering_or_donation_effort": "🤝 Coordinate with volunteer and donation networks",
 }
+
+# Color per class for prediction badges
+CLASS_COLORS = {
+    "infrastructure_and_utility_damage": "#e07c3a",
+    "injured_or_dead_people": "#e05555",
+    "not_humanitarian": "#6b7a8a",
+    "other_relevant_information": "#5b8dd9",
+    "rescue_volunteering_or_donation_effort": "#00c47c",
+}
+
+DEFAULT_CLASS_NAMES = [
+    "infrastructure_and_utility_damage",
+    "injured_or_dead_people",
+    "not_humanitarian",
+    "other_relevant_information",
+    "rescue_volunteering_or_donation_effort",
+]
 
 
 # ── Model Loading ────────────────────────────────────────────────────────────
@@ -65,11 +82,11 @@ def load_transformer_model(model_dir, model_key, device="cpu"):
         model = AutoModelForSequenceClassification.from_pretrained(model_path)
         model.to(device)
         model.eval()
-        print(f"  ✅ {DISPLAY_NAMES[model_key]} loaded from {model_path}")
+        print(f"  ✅ Loaded {model_key} from {model_path}")
         return model, tokenizer
     except Exception as e:
-        print(f"  ❌ {model_key} failed to load: {e}")
-        return None, None
+        print(f"  ❌ Failed to load {model_key}: {e}")
+        raise
 
 
 def load_all_models(model_dir, device="cpu"):
@@ -78,13 +95,17 @@ def load_all_models(model_dir, device="cpu"):
     tokenizers = {}
 
     for key in TRANSFORMER_KEYS:
-        model, tokenizer = load_transformer_model(model_dir, key, device)
-        if model is not None:
-            models[key] = model
-            tokenizers[key] = tokenizer
+        try:
+            model, tokenizer = load_transformer_model(model_dir, key, device)
+            if model is not None:
+                models[key] = model
+                tokenizers[key] = tokenizer
+        except Exception as e:
+            print(f"  ❌ Skipping {key} due to load error: {e}")
 
     # CNN
     cnn_model_path = os.path.join(model_dir, "cnn", "best_model", "model.pt")
+    print(f"  Looking for CNN at: {cnn_model_path}")
     if os.path.exists(cnn_model_path):
         try:
             from cnn_classifier import TextCNN
@@ -95,12 +116,16 @@ def load_all_models(model_dir, device="cpu"):
             cnn_model.to(device).eval()
             models["cnn"] = cnn_model
             tokenizers["cnn"] = vocab
-            print(f"  ✅ CNN loaded")
+            print(f"  ✅ Loaded CNN from {cnn_model_path}")
         except Exception as e:
-            print(f"  ❌ CNN failed: {e}")
+            print(f"  ❌ Failed to load CNN: {e}")
+            raise
+    else:
+        print(f"  ⚠ CNN model.pt not found at {cnn_model_path}")
 
     # BiLSTM
     bilstm_model_path = os.path.join(model_dir, "bilstm", "best_model", "model.pt")
+    print(f"  Looking for BiLSTM at: {bilstm_model_path}")
     if os.path.exists(bilstm_model_path):
         try:
             from bilstm_classifier import BiLSTMAttention
@@ -111,9 +136,12 @@ def load_all_models(model_dir, device="cpu"):
             bilstm_model.to(device).eval()
             models["bilstm"] = bilstm_model
             tokenizers["bilstm"] = vocab
-            print(f"  ✅ BiLSTM loaded")
+            print(f"  ✅ Loaded BiLSTM from {bilstm_model_path}")
         except Exception as e:
-            print(f"  ❌ BiLSTM failed: {e}")
+            print(f"  ❌ Failed to load BiLSTM: {e}")
+            raise
+    else:
+        print(f"  ⚠ BiLSTM model.pt not found at {bilstm_model_path}")
 
     return models, tokenizers
 
@@ -223,32 +251,50 @@ def _confidence_color(conf):
     return "#ef4444"      # red
 
 
+def _confidence_label(conf):
+    if conf >= 0.8:
+        return "High Confidence"
+    elif conf >= 0.6:
+        return "Medium Confidence"
+    return "Low Confidence"
+
+
 def _build_prediction_card(result, class_names):
-    """Build an HTML card showing the main prediction."""
+    """Build an HTML card showing the main prediction with colored badge."""
     pred = result["predicted_class"]
     conf = result["confidence"]
     style = result["tweet_style"]
     guidance = CLASS_GUIDANCE.get(pred, "")
-    color = _confidence_color(conf)
+    conf_color = _confidence_color(conf)
+    conf_label = _confidence_label(conf)
+    class_color = CLASS_COLORS.get(pred, "#5b8dd9")
 
     return f"""
-    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+    <div style="background:#fff;border-radius:16px;padding:28px;
+                box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:12px;">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:1.5px;margin-bottom:10px;font-weight:500;">
         Predicted Category
       </div>
-      <div style="font-size:20px;font-weight:700;color:#1a1a2e;margin-bottom:12px;">
+      <div style="display:inline-block;background:{class_color};color:#fff;
+                  padding:8px 20px;border-radius:24px;font-size:16px;
+                  font-weight:700;margin-bottom:16px;">
         {pred.replace('_', ' ').title()}
       </div>
-      <div style="display:inline-block;background:{color};color:#fff;padding:4px 14px;
-                  border-radius:20px;font-size:14px;font-weight:600;margin-bottom:16px;">
-        Confidence: {conf:.1%}
+      <div style="margin-top:12px;">
+        <span style="display:inline-block;background:{conf_color};color:#fff;
+                     padding:5px 16px;border-radius:20px;font-size:13px;
+                     font-weight:600;">
+          {conf_label}: {conf:.1%}
+        </span>
       </div>
-      <div style="margin-top:12px;font-size:14px;color:#374151;">
+      <div style="margin-top:14px;font-size:14px;color:#374151;">
         <strong>Tweet Style:</strong> {style}
       </div>
-      <div style="margin-top:16px;padding:12px;background:#f0fdf4;border-left:4px solid #22c55e;
-                  border-radius:0 8px 8px 0;font-size:13px;color:#166534;">
-        <strong>Action:</strong> {guidance}
+      <div style="margin-top:16px;padding:14px;background:#f0fdf4;
+                  border-left:4px solid #22c55e;border-radius:0 10px 10px 0;
+                  font-size:13px;color:#166534;">
+        <strong>Operational Action:</strong> {guidance}
       </div>
     </div>
     """
@@ -263,23 +309,26 @@ def _build_probability_bars(result, class_names):
     for cls, prob in sorted_probs:
         pct = prob * 100
         label = cls.replace("_", " ").title()
-        color = _confidence_color(prob) if prob > 0.3 else "#94a3b8"
+        bar_color = CLASS_COLORS.get(cls, "#94a3b8")
         bars_html += f"""
-        <div style="margin-bottom:10px;">
-          <div style="display:flex;justify-content:space-between;font-size:12px;color:#374151;margin-bottom:3px;">
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:12px;
+                      color:#374151;margin-bottom:4px;">
             <span>{label}</span>
             <span style="font-weight:600;">{prob:.4f}</span>
           </div>
-          <div style="background:#e5e7eb;border-radius:6px;height:10px;overflow:hidden;">
-            <div style="width:{pct}%;background:{color};height:100%;border-radius:6px;
-                        transition:width 0.5s ease;"></div>
+          <div style="background:#e5e7eb;border-radius:8px;height:12px;overflow:hidden;">
+            <div style="width:{pct}%;background:{bar_color};height:100%;
+                        border-radius:8px;transition:width 0.5s ease;"></div>
           </div>
         </div>
         """
 
     return f"""
-    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">
+    <div style="background:#fff;border-radius:16px;padding:28px;
+                box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:12px;">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:1.5px;margin-bottom:18px;font-weight:500;">
         Class Probabilities
       </div>
       {bars_html}
@@ -296,25 +345,33 @@ def _build_model_table(result):
         color = _confidence_color(conf)
         rows_html += f"""
         <tr>
-          <td style="padding:8px 12px;font-weight:500;border-bottom:1px solid #f3f4f6;">{name}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-size:13px;">{pred}</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;text-align:right;">
+          <td style="padding:10px 14px;font-weight:500;
+                     border-bottom:1px solid #f3f4f6;">{name}</td>
+          <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;
+                     font-size:13px;">{pred}</td>
+          <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;
+                     text-align:right;">
             <span style="color:{color};font-weight:600;">{conf:.4f}</span>
           </td>
         </tr>
         """
 
     return f"""
-    <div style="background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
-      <div style="font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">
+    <div style="background:#fff;border-radius:16px;padding:28px;
+                box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                  letter-spacing:1.5px;margin-bottom:18px;font-weight:500;">
         Per-Model Predictions
       </div>
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr style="border-bottom:2px solid #e5e7eb;">
-            <th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280;">Model</th>
-            <th style="padding:8px 12px;text-align:left;font-size:12px;color:#6b7280;">Prediction</th>
-            <th style="padding:8px 12px;text-align:right;font-size:12px;color:#6b7280;">Confidence</th>
+            <th style="padding:10px 14px;text-align:left;font-size:12px;
+                       color:#6b7280;">Model</th>
+            <th style="padding:10px 14px;text-align:left;font-size:12px;
+                       color:#6b7280;">Prediction</th>
+            <th style="padding:10px 14px;text-align:right;font-size:12px;
+                       color:#6b7280;">Confidence</th>
           </tr>
         </thead>
         <tbody>
@@ -323,6 +380,103 @@ def _build_model_table(result):
       </table>
     </div>
     """
+
+
+def _build_attribution_html(text, model, tokenizer, pred_class, device="cpu"):
+    """Build token attribution HTML with green/red highlighting."""
+    try:
+        from captum.attr import LayerIntegratedGradients
+
+        # Detect embedding layer
+        if hasattr(model, "roberta"):
+            embed_layer = model.roberta.embeddings.word_embeddings
+        elif hasattr(model, "deberta"):
+            embed_layer = model.deberta.embeddings.word_embeddings
+        elif hasattr(model, "electra"):
+            embed_layer = model.electra.embeddings.word_embeddings
+        elif hasattr(model, "bert"):
+            embed_layer = model.bert.embeddings.word_embeddings
+        elif hasattr(model, "distilbert"):
+            embed_layer = model.distilbert.embeddings.word_embeddings
+        else:
+            return "<div style='color:#6b7280;font-size:13px;padding:12px;'>Attribution not available for this model architecture.</div>"
+
+        def forward_fn(input_ids, attention_mask):
+            return model(input_ids=input_ids, attention_mask=attention_mask).logits
+
+        lig = LayerIntegratedGradients(forward_fn, embed_layer)
+
+        inputs = tokenizer(text, return_tensors="pt", truncation=True,
+                          padding="max_length", max_length=128)
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"].to(device)
+        baseline = torch.zeros_like(input_ids)
+
+        attrs = lig.attribute(
+            inputs=input_ids, baselines=baseline,
+            additional_forward_args=(attention_mask,),
+            target=int(pred_class), n_steps=30,
+        )
+        scores = attrs.sum(dim=-1).squeeze(0).detach().cpu().numpy()
+        seq_len = attention_mask.squeeze(0).sum().item()
+        tokens = tokenizer.convert_ids_to_tokens(
+            input_ids.squeeze(0).cpu().tolist()
+        )[:seq_len]
+        scores = scores[:seq_len]
+
+        mx = np.abs(scores).max()
+        if mx > 0:
+            scores = scores / mx
+
+        skip = {tokenizer.cls_token, tokenizer.sep_token,
+                tokenizer.pad_token, "<s>", "</s>", "<pad>"}
+        html = ""
+        for tok, score in zip(tokens, scores):
+            if tok in skip:
+                continue
+            display_tok = tok.replace("Ġ", " ").replace("Ċ", " ").replace("##", "")
+            alpha = min(0.15 + abs(score) * 0.7, 0.9)
+            if score > 0:
+                bg = f"rgba(34,197,94,{alpha:.2f})"
+            else:
+                bg = f"rgba(239,68,68,{alpha:.2f})"
+            html += (f'<span style="background:{bg};padding:3px 2px;margin:1px;'
+                     f'border-radius:3px;font-size:13px;line-height:2.2;'
+                     f'cursor:default;" title="score:{score:.3f}">'
+                     f'{display_tok}</span>')
+
+        legend = """
+        <div style="display:flex;gap:16px;margin-top:10px;padding-top:8px;
+                    border-top:1px solid #e5e7eb;">
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;">
+            <div style="width:12px;height:12px;border-radius:3px;
+                        background:rgba(34,197,94,0.7);"></div>Supports prediction
+          </div>
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;">
+            <div style="width:12px;height:12px;border-radius:3px;
+                        background:rgba(239,68,68,0.7);"></div>Opposes prediction
+          </div>
+        </div>
+        """
+
+        return f"""
+        <div style="background:#fff;border-radius:16px;padding:28px;
+                    box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-top:12px;">
+          <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+                      letter-spacing:1.5px;margin-bottom:14px;font-weight:500;">
+            Token Attribution (Integrated Gradients)
+          </div>
+          <div style="line-height:2.2;word-wrap:break-word;">
+            {html}
+          </div>
+          {legend}
+        </div>
+        """
+
+    except ImportError:
+        return "<div style='color:#6b7280;font-size:13px;padding:12px;'>Install captum for token attributions: pip install captum</div>"
+    except Exception as e:
+        return f"<div style='color:#ef4444;font-size:13px;padding:12px;'>Attribution error: {str(e)}</div>"
 
 
 # ── Gradio Dashboard ─────────────────────────────────────────────────────────
@@ -351,13 +505,18 @@ def create_dashboard(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ── Load models ──
+    # ── Print all paths being used ──
     print("=" * 60)
-    print("CRISIS DASHBOARD — Loading Models")
+    print("CRISIS DASHBOARD — Startup Configuration")
     print("=" * 60)
-    print(f"  Device: {device}")
-    print(f"  Model directory: {model_dir}")
+    print(f"  Device:             {device}")
+    print(f"  Model directory:    {model_dir}")
+    print(f"  Label mapping:      {label_mapping_path}")
+    print(f"  Ensemble directory: {ensemble_dir}")
+    print("=" * 60)
 
+    # ── Load models ──
+    print("\n--- Loading Models ---")
     models, tokenizers = load_all_models(model_dir, device)
     print(f"\n  Total loaded: {len(models)} models — {list(models.keys())}")
 
@@ -367,13 +526,19 @@ def create_dashboard(
     # ── Load label mapping ──
     class_names = None
     if label_mapping_path and os.path.exists(label_mapping_path):
-        with open(label_mapping_path) as f:
-            mapping = json.load(f)
-        id2label = {int(k): v for k, v in mapping["id2label"].items()}
-        class_names = [id2label[i] for i in range(len(id2label))]
-        print(f"  Label mapping loaded: {class_names}")
+        try:
+            with open(label_mapping_path) as f:
+                mapping = json.load(f)
+            id2label = {int(k): v for k, v in mapping["id2label"].items()}
+            class_names = [id2label[i] for i in range(len(id2label))]
+            print(f"  ✅ Label mapping loaded: {class_names}")
+        except Exception as e:
+            print(f"  ❌ Failed to load label mapping: {e}")
+            raise
     else:
         print(f"  ⚠ label_mapping_path not found: {label_mapping_path}")
+        class_names = DEFAULT_CLASS_NAMES
+        print(f"  Using default class names: {class_names}")
 
     # ── Load meta-learner ──
     meta_learner = None
@@ -381,21 +546,50 @@ def create_dashboard(
     if ensemble_dir:
         ml_path = os.path.join(ensemble_dir, "meta_learner.pkl")
         sc_path = os.path.join(ensemble_dir, "scaler.pkl")
+        print(f"  Looking for meta_learner at: {ml_path}")
+        print(f"  Looking for scaler at: {sc_path}")
         if os.path.exists(ml_path) and os.path.exists(sc_path):
-            meta_learner = joblib.load(ml_path)
-            scaler = joblib.load(sc_path)
-            print(f"  ✅ Meta-learner loaded from {ml_path}")
-            print(f"  ✅ Scaler loaded from {sc_path}")
+            try:
+                meta_learner = joblib.load(ml_path)
+                scaler = joblib.load(sc_path)
+                print(f"  ✅ Meta-learner loaded from {ml_path}")
+                print(f"  ✅ Scaler loaded from {sc_path}")
+            except Exception as e:
+                print(f"  ❌ Failed to load ensemble artifacts: {e}")
+                raise
         else:
             print(f"  ⚠ Ensemble artifacts not found at {ensemble_dir}")
+
+    # ── Test inference ──
+    print("\n--- Test Inference ---")
+    test_tweet = "People are trapped under rubble after the earthquake, urgent rescue needed immediately"
+    test_result = classify_tweet(test_tweet, models, tokenizers,
+                                 meta_learner, scaler, class_names, device)
+    if "error" in test_result:
+        print(f"  ❌ Test inference FAILED: {test_result['error']}")
+    else:
+        print(f"  ✅ Test tweet: '{test_tweet[:60]}...'")
+        print(f"     Predicted: {test_result['predicted_class']}")
+        print(f"     Confidence: {test_result['confidence']:.4f}")
     print("=" * 60)
+
+    # Store first loaded transformer for attributions
+    first_transformer_key = None
+    first_transformer_model = None
+    first_transformer_tokenizer = None
+    for k in TRANSFORMER_KEYS:
+        if k in models:
+            first_transformer_key = k
+            first_transformer_model = models[k]
+            first_transformer_tokenizer = tokenizers[k]
+            break
 
     # ── Prediction function ──
     def predict_fn(tweet_text):
-        empty = ('<div style="padding:20px;color:#9ca3af;text-align:center;">'
-                 'Enter a tweet and click Classify.</div>')
+        empty = ('<div style="padding:24px;color:#9ca3af;text-align:center;'
+                 'font-size:15px;">Enter a tweet and click Classify.</div>')
         if not tweet_text or not tweet_text.strip():
-            return empty, empty, empty
+            return empty, empty, empty, ""
 
         result = classify_tweet(
             tweet_text, models, tokenizers,
@@ -403,30 +597,45 @@ def create_dashboard(
         )
 
         if "error" in result:
-            err_html = (f'<div style="padding:20px;color:#ef4444;font-weight:600;">'
-                        f'Error: {result["error"]}</div>')
-            return err_html, "", ""
+            err_html = (f'<div style="padding:24px;color:#ef4444;font-weight:600;'
+                        f'font-size:15px;">Error: {result["error"]}</div>')
+            return err_html, "", "", ""
 
         pred_card = _build_prediction_card(result, class_names)
         prob_bars = _build_probability_bars(result, class_names)
         model_table = _build_model_table(result)
-        return pred_card, prob_bars, model_table
+
+        # Token attributions
+        attr_html = ""
+        if first_transformer_model is not None:
+            pred_idx = list(result["ensemble_probabilities"].values())
+            pred_class_idx = int(np.argmax(pred_idx))
+            attr_html = _build_attribution_html(
+                tweet_text, first_transformer_model,
+                first_transformer_tokenizer, pred_class_idx, device,
+            )
+
+        return pred_card, prob_bars, model_table, attr_html
 
     # ── Custom CSS ──
     custom_css = """
-    .gradio-container { max-width: 1100px !important; margin: auto; }
-    .main-header {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        color: white; padding: 32px 28px; border-radius: 16px;
-        margin-bottom: 24px; text-align: center;
+    .gradio-container {
+        max-width: 1200px !important;
+        margin: auto;
+        padding: 20px !important;
     }
-    .main-header h1 { font-size: 28px; margin: 0 0 6px 0; font-weight: 700; }
+    .main-header {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        color: white; padding: 36px 32px; border-radius: 20px;
+        margin-bottom: 28px; text-align: center;
+    }
+    .main-header h1 { font-size: 30px; margin: 0 0 8px 0; font-weight: 700; }
     .main-header p { font-size: 14px; color: #94a3b8; margin: 0; }
     """
 
     # ── Build interface ──
     with gr.Blocks(
-        title="Crisis Tweet Classification",
+        title="Crisis Tweet Classification Dashboard",
         theme=gr.themes.Soft(),
         css=custom_css,
     ) as app:
@@ -439,52 +648,59 @@ def create_dashboard(
         </div>
         """)
 
-        # Input area
+        # Input area with padding
         with gr.Row():
-            with gr.Column(scale=3):
+            with gr.Column(scale=4):
                 tweet_input = gr.Textbox(
                     label="Tweet Text",
-                    placeholder="Enter a disaster-related tweet here, e.g. Roads flooded in downtown area, rescue teams needed immediately",
+                    placeholder="Enter a disaster-related tweet here e.g. Roads flooded in downtown area, rescue teams needed immediately",
                     lines=4,
-                    max_lines=6,
+                    max_lines=8,
                 )
-            with gr.Column(scale=1, min_width=160):
-                gr.HTML("<div style='height:8px'></div>")
-                classify_btn = gr.Button("🔍 Classify", variant="primary", size="lg")
-                clear_btn = gr.ClearButton(components=[tweet_input], value="🗑 Clear", size="lg")
+            with gr.Column(scale=1, min_width=180):
+                gr.HTML("<div style='height:12px'></div>")
+                classify_btn = gr.Button(
+                    "🔍 Classify", variant="primary", size="lg",
+                )
+                clear_btn = gr.ClearButton(
+                    components=[tweet_input], value="🗑 Clear", size="lg",
+                )
 
-        gr.HTML("<div style='margin:16px 0'></div>")
+        gr.HTML("<div style='margin:20px 0'></div>")
 
         # Results — two-column layout
         with gr.Row(equal_height=False):
             with gr.Column(scale=1):
                 pred_output = gr.HTML(
-                    value='<div style="padding:20px;color:#9ca3af;text-align:center;">Results will appear here.</div>'
+                    value='<div style="padding:24px;color:#9ca3af;text-align:center;font-size:15px;">Results will appear here.</div>'
                 )
             with gr.Column(scale=1):
                 prob_output = gr.HTML(value="")
 
-        gr.HTML("<div style='margin:12px 0'></div>")
+        gr.HTML("<div style='margin:16px 0'></div>")
 
-        with gr.Row():
-            model_output = gr.HTML(value="")
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=1):
+                model_output = gr.HTML(value="")
+            with gr.Column(scale=1):
+                attr_output = gr.HTML(value="")
 
         classify_btn.click(
             fn=predict_fn,
             inputs=[tweet_input],
-            outputs=[pred_output, prob_output, model_output],
+            outputs=[pred_output, prob_output, model_output, attr_output],
         )
 
-        gr.HTML("<div style='margin:20px 0'></div>")
+        gr.HTML("<div style='margin:24px 0'></div>")
 
         # Example tweets — one per class
         gr.Examples(
             examples=[
-                ["HELP! Building collapsed, people trapped inside! Send rescue NOW!"],
+                ["Massive flooding has destroyed the main bridge connecting the two districts, power lines down everywhere"],
                 ["3 confirmed dead and dozens injured after the earthquake hit the coastal town this morning"],
-                ["The Red Cross has set up 3 relief camps in the affected district, donations needed urgently"],
-                ["Hurricane has been downgraded to Category 2 as it moves inland, power outages reported"],
                 ["Just watched a great movie tonight, loved the special effects!"],
+                ["Hurricane has been downgraded to Category 2 as it moves inland, power outages reported across 5 counties"],
+                ["The Red Cross has set up 3 relief camps in the affected district, donations needed urgently for food and medicine"],
             ],
             inputs=[tweet_input],
             label="Example Tweets (one per class)",

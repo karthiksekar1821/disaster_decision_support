@@ -74,13 +74,19 @@ def train_tfidf_svm_baseline(train_texts, train_labels, test_texts, test_labels)
     Returns:
         results dict with predictions and metrics
     """
+    from preprocessing import clean_text
+
+    # Clean texts to match what transformers were trained on
+    train_texts_clean = [clean_text(t) for t in train_texts]
+    test_texts_clean  = [clean_text(t) for t in test_texts]
+
     pipeline = Pipeline([
         ("tfidf", TfidfVectorizer(max_features=10000, ngram_range=(1, 2))),
         ("svm", LinearSVC(max_iter=5000, random_state=42)),
     ])
 
-    pipeline.fit(train_texts, train_labels)
-    preds = pipeline.predict(test_texts)
+    pipeline.fit(train_texts_clean, train_labels)
+    preds = pipeline.predict(test_texts_clean)
 
     macro_f1 = f1_score(test_labels, preds, average="macro")
     acc = accuracy_score(test_labels, preds)
