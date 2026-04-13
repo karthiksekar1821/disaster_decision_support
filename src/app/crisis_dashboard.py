@@ -272,7 +272,7 @@ def _build_prediction_card(result, class_names):
     return f"""
     <div style="background:#fff;border-radius:16px;padding:28px;
                 box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:12px;">
-      <div style="font-size:12px;color:#333333;text-transform:uppercase;
+      <div style="font-size:12px;color:#666666;text-transform:uppercase;
                   letter-spacing:1.5px;margin-bottom:10px;font-weight:500;">
         Predicted Category
       </div>
@@ -314,7 +314,7 @@ def _build_probability_bars(result, class_names):
         <div style="margin-bottom:12px;">
           <div style="display:flex;justify-content:space-between;font-size:12px;
                       color:#1a1a1a;margin-bottom:4px;">
-            <span>{label}</span>
+            <span style="color:#1a1a1a;">{label}</span>
             <span style="font-weight:600;color:#1a1a1a;">{prob:.4f}</span>
           </div>
           <div style="background:#e5e7eb;border-radius:8px;height:12px;overflow:hidden;">
