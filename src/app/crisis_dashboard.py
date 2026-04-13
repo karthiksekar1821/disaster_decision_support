@@ -289,12 +289,12 @@ def _build_prediction_card(result, class_names):
         </span>
       </div>
       <div style="margin-top:14px;font-size:14px;color:#333333;">
-        <strong>Tweet Style:</strong> {style}
+        <span style="color:#333333;"><strong style="color:#333333;">Tweet Style:</strong> {style}</span>
       </div>
       <div style="margin-top:16px;padding:14px;background:#f0fdf4;
                   border-left:4px solid #22c55e;border-radius:0 10px 10px 0;
                   font-size:13px;color:#1a1a1a;">
-        <strong>Operational Action:</strong> {guidance}
+        <span style="color:#1a1a1a;"><strong style="color:#1a1a1a;">Operational Action:</strong> {guidance}</span>
       </div>
     </div>
     """
