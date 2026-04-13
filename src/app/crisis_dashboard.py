@@ -272,7 +272,7 @@ def _build_prediction_card(result, class_names):
     return f"""
     <div style="background:#fff;border-radius:16px;padding:28px;
                 box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:12px;">
-      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+      <div style="font-size:12px;color:#333333;text-transform:uppercase;
                   letter-spacing:1.5px;margin-bottom:10px;font-weight:500;">
         Predicted Category
       </div>
@@ -288,12 +288,12 @@ def _build_prediction_card(result, class_names):
           {conf_label}: {conf:.1%}
         </span>
       </div>
-      <div style="margin-top:14px;font-size:14px;color:#374151;">
+      <div style="margin-top:14px;font-size:14px;color:#333333;">
         <strong>Tweet Style:</strong> {style}
       </div>
       <div style="margin-top:16px;padding:14px;background:#f0fdf4;
                   border-left:4px solid #22c55e;border-radius:0 10px 10px 0;
-                  font-size:13px;color:#166534;">
+                  font-size:13px;color:#1a1a1a;">
         <strong>Operational Action:</strong> {guidance}
       </div>
     </div>
@@ -313,9 +313,9 @@ def _build_probability_bars(result, class_names):
         bars_html += f"""
         <div style="margin-bottom:12px;">
           <div style="display:flex;justify-content:space-between;font-size:12px;
-                      color:#374151;margin-bottom:4px;">
+                      color:#1a1a1a;margin-bottom:4px;">
             <span>{label}</span>
-            <span style="font-weight:600;">{prob:.4f}</span>
+            <span style="font-weight:600;color:#1a1a1a;">{prob:.4f}</span>
           </div>
           <div style="background:#e5e7eb;border-radius:8px;height:12px;overflow:hidden;">
             <div style="width:{pct}%;background:{bar_color};height:100%;
@@ -327,7 +327,7 @@ def _build_probability_bars(result, class_names):
     return f"""
     <div style="background:#fff;border-radius:16px;padding:28px;
                 box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-bottom:12px;">
-      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+      <div style="font-size:12px;color:#333333;text-transform:uppercase;
                   letter-spacing:1.5px;margin-bottom:18px;font-weight:500;">
         Class Probabilities
       </div>
@@ -345,10 +345,10 @@ def _build_model_table(result):
         color = _confidence_color(conf)
         rows_html += f"""
         <tr>
-          <td style="padding:10px 14px;font-weight:500;
+          <td style="padding:10px 14px;font-weight:500;color:#1a1a1a;
                      border-bottom:1px solid #f3f4f6;">{name}</td>
           <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;
-                     font-size:13px;">{pred}</td>
+                     font-size:13px;color:#1a1a1a;">{pred}</td>
           <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;
                      text-align:right;">
             <span style="color:{color};font-weight:600;">{conf:.4f}</span>
@@ -359,7 +359,7 @@ def _build_model_table(result):
     return f"""
     <div style="background:#fff;border-radius:16px;padding:28px;
                 box-shadow:0 2px 12px rgba(0,0,0,0.08);">
-      <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+      <div style="font-size:12px;color:#333333;text-transform:uppercase;
                   letter-spacing:1.5px;margin-bottom:18px;font-weight:500;">
         Per-Model Predictions
       </div>
@@ -367,11 +367,11 @@ def _build_model_table(result):
         <thead>
           <tr style="border-bottom:2px solid #e5e7eb;">
             <th style="padding:10px 14px;text-align:left;font-size:12px;
-                       color:#6b7280;">Model</th>
+                       color:#333333;font-weight:700;">Model</th>
             <th style="padding:10px 14px;text-align:left;font-size:12px;
-                       color:#6b7280;">Prediction</th>
+                       color:#333333;font-weight:700;">Prediction</th>
             <th style="padding:10px 14px;text-align:right;font-size:12px;
-                       color:#6b7280;">Confidence</th>
+                       color:#333333;font-weight:700;">Confidence</th>
           </tr>
         </thead>
         <tbody>
@@ -442,17 +442,17 @@ def _build_attribution_html(text, model, tokenizer, pred_class, device="cpu"):
                 bg = f"rgba(239,68,68,{alpha:.2f})"
             html += (f'<span style="background:{bg};padding:3px 2px;margin:1px;'
                      f'border-radius:3px;font-size:13px;line-height:2.2;'
-                     f'cursor:default;" title="score:{score:.3f}">'
+                     f'color:#1a1a1a;cursor:default;" title="score:{score:.3f}">'
                      f'{display_tok}</span>')
 
         legend = """
         <div style="display:flex;gap:16px;margin-top:10px;padding-top:8px;
                     border-top:1px solid #e5e7eb;">
-          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;">
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#333333;">
             <div style="width:12px;height:12px;border-radius:3px;
                         background:rgba(34,197,94,0.7);"></div>Supports prediction
           </div>
-          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;">
+          <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:#333333;">
             <div style="width:12px;height:12px;border-radius:3px;
                         background:rgba(239,68,68,0.7);"></div>Opposes prediction
           </div>
@@ -462,7 +462,7 @@ def _build_attribution_html(text, model, tokenizer, pred_class, device="cpu"):
         return f"""
         <div style="background:#fff;border-radius:16px;padding:28px;
                     box-shadow:0 2px 12px rgba(0,0,0,0.08);margin-top:12px;">
-          <div style="font-size:12px;color:#6b7280;text-transform:uppercase;
+          <div style="font-size:12px;color:#333333;text-transform:uppercase;
                       letter-spacing:1.5px;margin-bottom:14px;font-weight:500;">
             Token Attribution (Integrated Gradients)
           </div>
