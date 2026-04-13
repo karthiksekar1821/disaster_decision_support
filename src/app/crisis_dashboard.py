@@ -110,9 +110,9 @@ def load_all_models(model_dir, device="cpu"):
         try:
             from cnn_classifier import TextCNN
             vocab = torch.load(os.path.join(model_dir, "cnn", "best_model", "vocab.pt"),
-                               map_location=device)
+                               map_location=device, weights_only=False)
             cnn_model = TextCNN(vocab_size=len(vocab), num_classes=5)
-            cnn_model.load_state_dict(torch.load(cnn_model_path, map_location=device))
+            cnn_model.load_state_dict(torch.load(cnn_model_path, map_location=device, weights_only=False))
             cnn_model.to(device).eval()
             models["cnn"] = cnn_model
             tokenizers["cnn"] = vocab
@@ -130,9 +130,9 @@ def load_all_models(model_dir, device="cpu"):
         try:
             from bilstm_classifier import BiLSTMAttention
             vocab = torch.load(os.path.join(model_dir, "bilstm", "best_model", "vocab.pt"),
-                               map_location=device)
+                               map_location=device, weights_only=False)
             bilstm_model = BiLSTMAttention(vocab_size=len(vocab), num_classes=5)
-            bilstm_model.load_state_dict(torch.load(bilstm_model_path, map_location=device))
+            bilstm_model.load_state_dict(torch.load(bilstm_model_path, map_location=device, weights_only=False))
             bilstm_model.to(device).eval()
             models["bilstm"] = bilstm_model
             tokenizers["bilstm"] = vocab

@@ -234,7 +234,7 @@ def train_single_model(
     # Load pre-computed class weights if available, otherwise compute from training labels
     weights_path = os.path.join(DATA_DIR, "class_weights.pt")
     if os.path.exists(weights_path):
-        class_weights = torch.load(weights_path).tolist()
+        class_weights = torch.load(weights_path, weights_only=False).tolist()
         print(f"  Loaded pre-computed class weights: {[f'{w:.4f}' for w in class_weights]}")
     else:
         train_labels = tokenized["train"]["label"]
